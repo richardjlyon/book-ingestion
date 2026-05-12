@@ -1,0 +1,1 @@
+"""Chapter structure extraction."""
