@@ -177,7 +177,7 @@ class BookSurvey(BaseModel):
     quality: Quality
     cache_paths: dict[str, str] = Field(default_factory=dict)
     page_labels: dict[int, str] = Field(default_factory=dict)
-    page_label_provenance: Literal["embedded", "inferred", "none"] = "none"
+    page_label_provenance: Provenance = Provenance.NONE
 
 
 class ChapterContent(BaseModel):

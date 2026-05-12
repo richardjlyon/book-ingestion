@@ -100,9 +100,33 @@ def test_book_survey_with_page_labels_round_trips() -> None:
         map=MapInfo(provenance=Provenance.EMBEDDED, confidence=Confidence.GOOD, method="pdf_outline"),
         quality=Quality(backend="docling_pdf", flags=[]),
         page_labels={1: "i", 2: "ii", 14: "10"},
-        page_label_provenance="embedded",
+        page_label_provenance=Provenance.EMBEDDED,
     )
     again = BookSurvey.model_validate(survey.model_dump(mode="json"))
     assert again == survey
     assert again.page_labels[14] == "10"
-    assert again.page_label_provenance == "embedded"
+    assert again.page_label_provenance == Provenance.EMBEDDED
+
+
+def test_legacy_one_zero_dict_still_validates() -> None:
+    """A pre-1.1 BookSurvey dict (no page_labels / page_label_provenance) must
+    still round-trip; new fields fill in with defaults."""
+    legacy = {
+        "schema_version": "1.0",
+        "kind": "book_survey",
+        "source": {
+            "path": "/tmp/old.pdf",
+            "sha256": "cd" * 32,
+            "size_bytes": 99,
+            "format": "pdf",
+        },
+        "metadata": {},
+        "chapters": [],
+        "map": {"provenance": "embedded", "confidence": "GOOD", "method": "pdf_outline"},
+        "quality": {"backend": "docling_pdf", "flags": []},
+        "cache_paths": {},
+    }
+    survey = BookSurvey.model_validate(legacy)
+    assert survey.schema_version == "1.0"
+    assert survey.page_labels == {}
+    assert survey.page_label_provenance == Provenance.NONE
