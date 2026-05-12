@@ -132,6 +132,7 @@ class PdfDoclingBackend:
             for c in Confidence:
                 if raw == c.value:
                     return c
+            return None
         if isinstance(raw, int | float):
             return grade_from_score(float(raw))
         for attr in ("name", "value"):
@@ -159,14 +160,19 @@ class PdfDoclingBackend:
         hints: list[HeadingHint] = []
         texts = doc_dict.get("texts") or []
         for item in texts:
-            label = str(item.get("label") or "").lower()
-            if "section_header" not in label and "heading" not in label:
+            if not isinstance(item, dict):
                 continue
-            text = str(item.get("text") or "").strip()
-            if not text:
+            try:
+                label = str(item.get("label") or "").lower()
+                if "section_header" not in label and "heading" not in label:
+                    continue
+                text = str(item.get("text") or "").strip()
+                if not text:
+                    continue
+                prov = item.get("prov") or []
+                page = int(prov[0]["page_no"]) if prov and isinstance(prov[0], dict) and "page_no" in prov[0] else 1
+                level = int(item.get("level") or 1)
+                hints.append(HeadingHint(text=text, level=level, page=page))
+            except (TypeError, ValueError, KeyError):
                 continue
-            prov = item.get("prov") or []
-            page = int(prov[0]["page_no"]) if prov and "page_no" in prov[0] else 1
-            level = int(item.get("level") or 1)
-            hints.append(HeadingHint(text=text, level=level, page=page))
         return hints
