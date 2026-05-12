@@ -20,3 +20,6 @@ venv/
 .vscode/
 .idea/
 .DS_Store
+
+# Acceptance run output (large JSON, transient caches)
+acceptance/
