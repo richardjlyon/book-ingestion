@@ -46,7 +46,13 @@ def build_chapter_map(
 
     chapters: list[Chapter] = []
     for i, h in enumerate(top_level):
-        end = (top_level[i + 1].page - 1) if i + 1 < len(top_level) else total_pages
+        # Guard against consecutive hints on the same (or earlier) page, which can
+        # happen when a PDF outline has cover-page titles that share a page with
+        # the real chapter heading. Clamp to a 1-page range minimum.
+        if i + 1 < len(top_level):
+            end = max(h.page, top_level[i + 1].page - 1)
+        else:
+            end = max(h.page, total_pages)
         chapters.append(
             Chapter(
                 index=i,

@@ -66,3 +66,27 @@ def test_returns_inferred_when_caller_says_so() -> None:
     _, info = build_chapter_map(hints, total_pages=10, provenance=Provenance.INFERRED, method="typographic")
     assert info.provenance == Provenance.INFERRED
     assert info.method == "typographic"
+
+
+def test_inverted_range_clamps_to_single_page() -> None:
+    """Consecutive level-1 hints on the same (or earlier) page must still
+    yield a valid PageRange where end_page >= start_page."""
+    hints = [
+        HeadingHint(text="Chapter One Cover", level=1, page=14),
+        HeadingHint(text="Chapter One Heading", level=1, page=14),
+        HeadingHint(text="Chapter Two", level=1, page=33),
+    ]
+    chapters, _ = build_chapter_map(hints, total_pages=100)
+    # All three chapters retained
+    assert [c.title for c in chapters] == [
+        "Chapter One Cover",
+        "Chapter One Heading",
+        "Chapter Two",
+    ]
+    # The clamped chapter has a 1-page range, not an inverted one.
+    assert isinstance(chapters[0].locator, PageRange)
+    assert chapters[0].locator.start_page == 14
+    assert chapters[0].locator.end_page == 14
+    assert chapters[0].locator.end_page >= chapters[0].locator.start_page
+    assert chapters[1].locator.start_page == 14  # type: ignore[union-attr]
+    assert chapters[1].locator.end_page == 32  # type: ignore[union-attr]  # one before next
