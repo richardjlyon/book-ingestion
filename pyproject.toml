@@ -9,6 +9,7 @@ authors = [{ name = "Richard Lyon" }]
 dependencies = [
     "docling>=2.93",
     "pydantic>=2.13",
+    "pypdf>=5.0",
     "typer>=0.12.5,<0.22.0",  # constrained by docling-slim[standard]==2.93.0
 ]
 
