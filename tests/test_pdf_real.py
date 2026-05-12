@@ -31,6 +31,10 @@ def test_survey_returns_valid_book_survey(tmp_cache_dir: Path) -> None:
         Provenance.LLM_ASSISTED,
         Provenance.NONE,
     }
+    # M1.1: page labels must be populated (either embedded or inferred).
+    assert s.page_label_provenance in {Provenance.EMBEDDED, Provenance.INFERRED, Provenance.NONE}
+    if s.page_label_provenance != Provenance.NONE:
+        assert s.page_labels, "provenance says we have labels but the map is empty"
 
 
 @pytest.mark.skipif(not _has_book(), reason="real book file not present at test/")
@@ -50,3 +54,9 @@ def test_extract_each_detected_chapter(tmp_cache_dir: Path) -> None:
         for grade_field in ("docling_mean_grade", "docling_low_grade"):
             v = getattr(s.quality, grade_field)
             assert v is None or isinstance(v, Confidence)
+        # Per-chapter locator labels are populated whenever the survey has labels
+        if s.page_label_provenance != Provenance.NONE:
+            assert isinstance(chapter.locator, PageRange)
+            start_lbl = chapter.locator.start_page_label
+            end_lbl = chapter.locator.end_page_label
+            assert (start_lbl is None) == (end_lbl is None)
