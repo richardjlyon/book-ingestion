@@ -9,9 +9,16 @@ from book_ingestion.backends.base import Context
 from book_ingestion.ir import (
     SCHEMA_VERSION,
     BookSurvey,
+    ChapterContent,
     Confidence,
+    PageRange,
     Quality,
     Source,
+)
+from book_ingestion.projection.to_simple_view import (
+    DoclingItem,
+    ItemKind,
+    project_to_simple_view,
 )
 from book_ingestion.quality.flags import validate_flag
 from book_ingestion.quality.scoring import grade_from_score
@@ -176,3 +183,135 @@ class PdfDoclingBackend:
             except (TypeError, ValueError, KeyError):
                 continue
         return hints
+
+    # --- extract ----------------------------------------------------------
+
+    def extract_chapter(self, path: Path, chapter_index: int, *, ctx: Context) -> ChapterContent:
+        if ctx.use_cache:
+            cached = ctx.cache.read(path, f"chapter-{chapter_index}.json")
+            if cached is not None:
+                return ChapterContent.model_validate(cached)
+
+        survey = self.survey(path, ctx=ctx)
+        if chapter_index < 0 or chapter_index >= len(survey.chapters):
+            raise IndexError(
+                f"chapter_index {chapter_index} out of range "
+                f"(book has {len(survey.chapters)} chapters)"
+            )
+
+        chapter = survey.chapters[chapter_index]
+        docling_payload = self._get_or_run_docling(path, ctx=ctx)
+        assert isinstance(chapter.locator, PageRange)
+        items = self._slice_to_items(docling_payload["document"], chapter.locator)
+        blocks = project_to_simple_view(items)
+
+        pages_processed = list(range(chapter.locator.start_page, chapter.locator.end_page + 1))
+        pages_with_failures = sorted({b.page for b in blocks if b.type == "failed_region" and b.page is not None})
+        counts: dict[str, int] = {}
+        for b in blocks:
+            if hasattr(b, "confidence"):
+                key = getattr(b, "confidence").value  # noqa: B009
+                counts[key] = counts.get(key, 0) + 1
+
+        chapter_path = self._write_chapter_slice(path, ctx=ctx, chapter_index=chapter_index, locator=chapter.locator)
+
+        content = ChapterContent(
+            schema_version=SCHEMA_VERSION,
+            source=survey.source,
+            chapter=chapter,
+            simple_view=blocks,
+            quality=Quality(
+                backend=self.name,
+                pages_processed=pages_processed,
+                pages_with_failures=pages_with_failures,
+                block_confidence_counts=counts,
+                flags=[],
+            ),
+            cache_paths={"docling_chapter": str(chapter_path)},
+        )
+        ctx.cache.write(path, f"chapter-{chapter_index}.json", content.model_dump(mode="json"))
+        return content
+
+    @staticmethod
+    def _slice_to_items(doc_dict: dict[str, Any], locator: PageRange) -> list[DoclingItem]:
+        items: list[DoclingItem] = []
+        for entry in doc_dict.get("texts") or []:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                prov = entry.get("prov") or []
+                page = int(prov[0]["page_no"]) if prov and isinstance(prov[0], dict) and "page_no" in prov[0] else 0
+                if page < locator.start_page or page > locator.end_page:
+                    continue
+                label = str(entry.get("label") or "").lower()
+                text = str(entry.get("text") or "")
+                score = float(entry.get("confidence") or 0.95)
+                kind: ItemKind
+                extra: dict[str, Any] = {}
+                if "section_header" in label or "heading" in label:
+                    kind = "heading"
+                    extra["level"] = int(entry.get("level") or 1)
+                elif "list_item" in label:
+                    kind = "list_item"
+                    extra["list_marker"] = entry.get("marker")
+                elif "footnote" in label:
+                    kind = "footnote"
+                    extra["fn_id"] = entry.get("self_ref") or f"fn-{len(items)}"
+                elif "caption" in label:
+                    kind = "figure_caption"
+                else:
+                    kind = "paragraph"
+                items.append(DoclingItem(kind=kind, text=text, page=page, score=score, extra=extra))
+            except (TypeError, ValueError, KeyError, AttributeError):
+                continue
+
+        for entry in doc_dict.get("tables") or []:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                prov = entry.get("prov") or []
+                page = int(prov[0]["page_no"]) if prov and isinstance(prov[0], dict) and "page_no" in prov[0] else 0
+                if page < locator.start_page or page > locator.end_page:
+                    continue
+                rows = _table_rows_from_docling(entry)
+                raw_text = "\n".join(" | ".join(r) for r in rows) if rows else ""
+                score = float(entry.get("confidence") or 0.80)
+                items.append(
+                    DoclingItem(
+                        kind="table",
+                        text="",
+                        page=page,
+                        score=score,
+                        extra={"rows": rows, "raw_text": raw_text},
+                    )
+                )
+            except (TypeError, ValueError, KeyError, AttributeError):
+                continue
+
+        items.sort(key=lambda it: it.page)
+        return items
+
+    def _write_chapter_slice(
+        self,
+        path: Path,
+        *,
+        ctx: Context,
+        chapter_index: int,
+        locator: PageRange,
+    ) -> Path:
+        payload = {
+            "chapter_index": chapter_index,
+            "start_page": locator.start_page,
+            "end_page": locator.end_page,
+        }
+        return ctx.cache.write(path, f"chapter-{chapter_index}.docling.json", payload)
+
+
+def _table_rows_from_docling(table_entry: dict[str, Any]) -> list[list[str]]:
+    """Pull a 2D list of strings from a DoclingDocument table entry."""
+    data = table_entry.get("data") or {}
+    grid = data.get("grid") or []
+    rows: list[list[str]] = []
+    for row in grid:
+        rows.append([str(cell.get("text") or "") for cell in row])
+    return rows
