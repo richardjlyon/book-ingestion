@@ -133,3 +133,25 @@ def test_infer_finds_progression_inside_noisy_input() -> None:
     assert labels[4] == "1"
     assert labels[8] == "5"
     assert 1 not in labels
+
+
+def test_infer_fills_gaps_with_dominant_offset() -> None:
+    """Gaps in the candidate stream (e.g., chapter-cover pages with no page
+    number) are filled in by extrapolating the dominant offset."""
+    page_texts = {
+        15: ["11", "running header"],
+        16: ["12"],
+        17: ["13"],
+        18: ["14"],
+        19: ["chapter cover, no number"],   # gap
+        20: ["16"],
+        21: ["17"],
+        22: ["18"],
+    }
+    labels = infer_page_labels_from_blocks(page_texts)
+    assert labels is not None
+    assert labels[15] == "11"
+    assert labels[19] == "15"   # filled in via offset -4
+    assert labels[22] == "18"
+    # All 8 pages get labels
+    assert len(labels) == 8

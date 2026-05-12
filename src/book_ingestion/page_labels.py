@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -106,43 +107,43 @@ def infer_page_labels_from_blocks(
     the first and last few paragraph-block texts on that page; the caller
     decides what counts as a header/footer candidate).
 
-    Returns a dict[int, str] when ≥ _MIN_RUN consecutive pages show a monotone
-    integer progression in any candidate slot. Returns None otherwise.
+    Uses a dominant-offset approach: collects (page, value) candidate pairs,
+    computes offset = value - page for each, and accepts the most common
+    offset if it has ≥ _MIN_RUN supporting pairs. The accepted offset is then
+    applied across its observed PDF-page range, filling in gaps (e.g. chapter
+    cover pages with no page number). Returns None if no dominant offset
+    meets the threshold.
     """
     if not page_texts:
         return None
 
-    candidates: dict[int, list[tuple[str, int]]] = {}
-    for page, texts in page_texts.items():
-        page_candidates = [c for t in texts if (c := _candidate_label(t)) is not None]
-        if page_candidates:
-            candidates[page] = page_candidates
+    # Build (page, value) pairs from the first candidate on each page.
+    pairs: list[tuple[int, int]] = []
+    for page, texts in sorted(page_texts.items()):
+        for t in texts:
+            c = _candidate_label(t)
+            if c is not None:
+                _label, value = c
+                pairs.append((page, value))
+                break
 
-    sorted_pages = sorted(candidates.keys())
-    if len(sorted_pages) < _MIN_RUN:
+    if len(pairs) < _MIN_RUN:
         return None
 
-    def _first(cs: list[tuple[str, int]]) -> tuple[str, int]:
-        return cs[0]
+    # Find the dominant offset (value - page).
+    offset_counts = Counter(v - p for (p, v) in pairs)
+    dominant_offset, support = offset_counts.most_common(1)[0]
+    if support < _MIN_RUN:
+        return None
 
-    def _last(cs: list[tuple[str, int]]) -> tuple[str, int]:
-        return cs[-1]
+    # Determine the observed PDF page range for the dominant offset.
+    matching_pages = sorted(p for (p, v) in pairs if v - p == dominant_offset)
+    p_min, p_max = matching_pages[0], matching_pages[-1]
 
-    best: dict[int, str] = {}
-    for slot_picker in (_first, _last):
-        chosen: dict[int, tuple[str, int]] = {
-            p: slot_picker(candidates[p]) for p in sorted_pages
-        }
-        run: list[int] = []
-        for p in sorted_pages:
-            _label, val = chosen[p]
-            if run and (p == run[-1] + 1) and (chosen[run[-1]][1] + 1 == val):
-                run.append(p)
-            else:
-                run = [p]
-            if len(run) >= _MIN_RUN and len(run) > len(best):
-                best = {pp: chosen[pp][0] for pp in run}
-        if best:
-            break
-
-    return best or None
+    # Apply the offset to every PDF page in that range (fills in gaps).
+    labels: dict[int, str] = {}
+    for p in range(p_min, p_max + 1):
+        value = p + dominant_offset
+        if value >= 1:
+            labels[p] = str(value)
+    return labels or None
