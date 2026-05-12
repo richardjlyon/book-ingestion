@@ -72,7 +72,7 @@ def project_to_simple_view(items: list[DoclingItem]) -> list[Block]:
 def _project_one(item: DoclingItem) -> Block:
     grade = grade_from_score(item.score)
 
-    if item.kind == "paragraph" and grade in _FAILED_REGION_THRESHOLD:
+    if item.kind in ("paragraph", "list_item") and grade in _FAILED_REGION_THRESHOLD:
         return FailedRegion(page=item.page, reason="low_confidence_extraction", raw_text=item.text)
 
     if item.kind == "heading":

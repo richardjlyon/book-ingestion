@@ -96,3 +96,11 @@ def test_poor_score_paragraph_becomes_failed_region() -> None:
     assert blocks == [
         FailedRegion(page=8, reason="low_confidence_extraction", raw_text="garbled"),
     ]
+
+
+def test_poor_score_list_item_becomes_failed_region() -> None:
+    items = [_item("list_item", text="bullet", page=8, score=0.10)]
+    blocks = project_to_simple_view(items)
+    assert blocks == [
+        FailedRegion(page=8, reason="low_confidence_extraction", raw_text="bullet"),
+    ]
