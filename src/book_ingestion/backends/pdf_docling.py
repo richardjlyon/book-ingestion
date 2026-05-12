@@ -9,11 +9,17 @@ from book_ingestion.backends.base import Context
 from book_ingestion.ir import (
     SCHEMA_VERSION,
     BookSurvey,
+    Chapter,
     ChapterContent,
     Confidence,
     PageRange,
+    Provenance,
     Quality,
     Source,
+)
+from book_ingestion.page_labels import (
+    infer_page_labels_from_blocks,
+    read_pdf_page_labels,
 )
 from book_ingestion.projection.to_simple_view import (
     DoclingItem,
@@ -103,6 +109,36 @@ class PdfDoclingBackend:
             flags.append("embedded_toc_present")
         elif map_info.provenance.value == "none":
             flags.append("toc_unresolved")
+
+        # Page labels: try /PageLabels first (exact); fall back to heuristic inference.
+        labels: dict[int, str] | None = read_pdf_page_labels(path)
+        page_label_provenance = Provenance.NONE
+        if labels:
+            page_label_provenance = Provenance.EMBEDDED
+            flags.append("page_labels_embedded")
+        else:
+            # Build per-page text snapshot from the texts array for inference.
+            page_snapshot: dict[int, list[str]] = {}
+            for entry in docling["document"].get("texts") or []:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    prov = entry.get("prov") or []
+                    if not prov or not isinstance(prov[0], dict) or "page_no" not in prov[0]:
+                        continue
+                    page = int(prov[0]["page_no"])
+                    text = str(entry.get("text") or "").strip()
+                    if text:
+                        page_snapshot.setdefault(page, []).append(text)
+                except (TypeError, ValueError, KeyError):
+                    continue
+            labels = infer_page_labels_from_blocks(page_snapshot)
+            if labels:
+                page_label_provenance = Provenance.INFERRED
+                flags.append("page_labels_inferred")
+            else:
+                flags.append("page_labels_unresolved")
+
         for f in flags:
             validate_flag(f)
 
@@ -119,7 +155,7 @@ class PdfDoclingBackend:
                 format="pdf",
             ),
             metadata=self._extract_metadata(docling["document"]),
-            chapters=chapters,
+            chapters=self._stamp_chapter_labels(chapters, labels or {}),
             map=map_info,
             quality=Quality(
                 backend=self.name,
@@ -129,6 +165,8 @@ class PdfDoclingBackend:
                 flags=flags,
             ),
             cache_paths={"docling_document": str(ctx.cache.dir_for(path) / "docling.json")},
+            page_labels=labels or {},
+            page_label_provenance=page_label_provenance,
         )
 
     @staticmethod
@@ -161,6 +199,23 @@ class PdfDoclingBackend:
             "isbn": None,
             "language": None,
         }
+
+    @staticmethod
+    def _stamp_chapter_labels(
+        chapters: list[Chapter], labels: dict[int, str]
+    ) -> list[Chapter]:
+        """Return chapters with start/end_page_label populated from `labels` when known."""
+        stamped: list[Chapter] = []
+        for c in chapters:
+            if not isinstance(c.locator, PageRange):
+                stamped.append(c)
+                continue
+            new_locator = c.locator.model_copy(update={
+                "start_page_label": labels.get(c.locator.start_page),
+                "end_page_label": labels.get(c.locator.end_page),
+            })
+            stamped.append(c.model_copy(update={"locator": new_locator}))
+        return stamped
 
     @staticmethod
     def _extract_heading_hints(doc_dict: dict[str, Any]) -> list[HeadingHint]:
@@ -203,7 +258,7 @@ class PdfDoclingBackend:
         docling_payload = self._get_or_run_docling(path, ctx=ctx)
         assert isinstance(chapter.locator, PageRange)
         items = self._slice_to_items(docling_payload["document"], chapter.locator)
-        blocks = project_to_simple_view(items)
+        blocks = project_to_simple_view(items, page_labels=survey.page_labels or None)
 
         pages_processed = list(range(chapter.locator.start_page, chapter.locator.end_page + 1))
         pages_with_failures = sorted({b.page for b in blocks if b.type == "failed_region" and b.page is not None})
