@@ -45,6 +45,11 @@ python_version = "3.11"
 strict = true
 files = ["src/book_ingestion"]
 
+[tool.pyright]
+# ReportLab has no published type stubs; suppress the resulting noise.
+# mypy (our canonical type checker, scoped to src/) is unaffected.
+reportMissingModuleSource = "none"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
