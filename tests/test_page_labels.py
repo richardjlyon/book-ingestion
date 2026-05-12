@@ -11,7 +11,7 @@ from pypdf.generic import (
     NumberObject,
 )
 
-from book_ingestion.page_labels import read_pdf_page_labels
+from book_ingestion.page_labels import infer_page_labels_from_blocks, read_pdf_page_labels
 
 
 def _make_pdf_without_labels(path: Path) -> None:
@@ -72,3 +72,64 @@ def test_returns_none_on_malformed_pdf(tmp_path: Path) -> None:
     p = tmp_path / "bad.pdf"
     p.write_bytes(b"not a pdf at all")
     assert read_pdf_page_labels(p) is None
+
+
+def test_infer_arabic_progression() -> None:
+    page_texts = {
+        1: ["1", "Introduction"],
+        2: ["chapter title", "2"],
+        3: ["3", "more content"],
+        4: ["4", "still more"],
+        5: ["5", "etc"],
+    }
+    labels = infer_page_labels_from_blocks(page_texts)
+    assert labels is not None
+    assert labels[1] == "1"
+    assert labels[5] == "5"
+
+
+def test_infer_returns_none_when_no_signal() -> None:
+    page_texts = {
+        1: ["The quick brown fox", "jumps over"],
+        2: ["the lazy dog", "and runs"],
+        3: ["into the night", "alone"],
+        4: ["forever", "and ever"],
+    }
+    assert infer_page_labels_from_blocks(page_texts) is None
+
+
+def test_infer_requires_min_run_length() -> None:
+    page_texts = {
+        1: ["1"],
+        2: ["2"],
+        3: ["3"],
+    }
+    assert infer_page_labels_from_blocks(page_texts) is None
+
+
+def test_infer_rejects_non_monotone() -> None:
+    page_texts = {
+        1: ["10"],
+        2: ["5"],
+        3: ["7"],
+        4: ["12"],
+    }
+    assert infer_page_labels_from_blocks(page_texts) is None
+
+
+def test_infer_finds_progression_inside_noisy_input() -> None:
+    page_texts = {
+        1: ["Front matter title"],
+        2: ["acknowledgments"],
+        3: ["preface"],
+        4: ["1", "running header text"],
+        5: ["2", "more"],
+        6: ["3", "stuff"],
+        7: ["4", "more stuff"],
+        8: ["5", "etc"],
+    }
+    labels = infer_page_labels_from_blocks(page_texts)
+    assert labels is not None
+    assert labels[4] == "1"
+    assert labels[8] == "5"
+    assert 1 not in labels
