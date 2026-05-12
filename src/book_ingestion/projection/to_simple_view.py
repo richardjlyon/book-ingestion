@@ -54,36 +54,50 @@ _LOW_CONFIDENCE = Confidence.FAIR  # < FAIR → failed_region
 _FAILED_REGION_THRESHOLD = {Confidence.POOR}
 
 
-def project_to_simple_view(items: list[DoclingItem]) -> list[Block]:
+def project_to_simple_view(
+    items: list[DoclingItem],
+    *,
+    page_labels: dict[int, str] | None = None,
+) -> list[Block]:
     """Convert items to a list of simple_view blocks, inserting page_breaks
-    between blocks that cross a page boundary."""
+    between blocks that cross a page boundary. When `page_labels` is provided,
+    each block's `page_label` is stamped from the map."""
     blocks: list[Block] = []
     last_page: int | None = None
+    labels = page_labels or {}
 
     for item in items:
         if last_page is not None and item.page != last_page:
-            blocks.append(PageBreak(page=item.page))
+            page = item.page
+            label = labels.get(page)
+            blocks.append(PageBreak(page=page, page_label=label))
         last_page = item.page
-        blocks.append(_project_one(item))
+        blocks.append(_project_one(item, label=labels.get(item.page)))
 
     return blocks
 
 
-def _project_one(item: DoclingItem) -> Block:
+def _project_one(item: DoclingItem, *, label: str | None = None) -> Block:
     grade = grade_from_score(item.score)
 
     if item.kind in ("paragraph", "list_item") and grade in _FAILED_REGION_THRESHOLD:
-        return FailedRegion(page=item.page, reason="low_confidence_extraction", raw_text=item.text)
+        return FailedRegion(
+            page=item.page,
+            page_label=label,
+            reason="low_confidence_extraction",
+            raw_text=item.text,
+        )
 
     if item.kind == "heading":
         level = int(item.extra.get("level", 1))
-        return Heading(text=item.text, level=level, page=item.page, confidence=grade)
+        return Heading(text=item.text, level=level, page=item.page, page_label=label, confidence=grade)
 
     if item.kind in ("paragraph", "list_item"):
         ref = item.extra.get("footnote_ref")
         return Paragraph(
             text=item.text,
             page=item.page,
+            page_label=label,
             confidence=grade,
             footnote_refs=[ref] if ref else [],
             list_marker=item.extra.get("list_marker"),
@@ -93,14 +107,31 @@ def _project_one(item: DoclingItem) -> Block:
         rows = item.extra.get("rows")
         raw_text = item.extra.get("raw_text", "")
         if grade in (Confidence.GOOD, Confidence.EXCELLENT) and rows:
-            return Table(page=item.page, confidence=grade, rows=rows, raw_text=raw_text)
-        return Table(page=item.page, confidence=grade, rows=None, raw_text=raw_text)
+            return Table(
+                page=item.page,
+                page_label=label,
+                confidence=grade,
+                rows=rows,
+                raw_text=raw_text,
+            )
+        return Table(
+            page=item.page,
+            page_label=label,
+            confidence=grade,
+            rows=None,
+            raw_text=raw_text,
+        )
 
     if item.kind == "figure_caption":
-        return FigureCaption(text=item.text, page=item.page, confidence=grade)
+        return FigureCaption(text=item.text, page=item.page, page_label=label, confidence=grade)
 
     if item.kind == "footnote":
         fn_id = str(item.extra.get("fn_id", "fn-?"))
-        return Footnote(id=fn_id, text=item.text, page=item.page, confidence=grade)
+        return Footnote(id=fn_id, text=item.text, page=item.page, page_label=label, confidence=grade)
 
-    return FailedRegion(page=item.page, reason="unknown_item_type", raw_text=item.text)
+    return FailedRegion(
+        page=item.page,
+        page_label=label,
+        reason="unknown_item_type",
+        raw_text=item.text,
+    )

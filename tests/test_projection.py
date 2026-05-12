@@ -104,3 +104,15 @@ def test_poor_score_list_item_becomes_failed_region() -> None:
     assert blocks == [
         FailedRegion(page=8, reason="low_confidence_extraction", raw_text="bullet"),
     ]
+
+
+def test_page_labels_stamped_when_map_provided() -> None:
+    items = [
+        _item("paragraph", text="On 14.", page=14),
+        _item("paragraph", text="On 15.", page=15),
+    ]
+    labels = {14: "10", 15: "11"}
+    blocks = project_to_simple_view(items, page_labels=labels)
+    assert blocks[0].page_label == "10"
+    assert blocks[1].page_label == "11"  # the synthetic PageBreak between them
+    assert blocks[2].page_label == "11"
