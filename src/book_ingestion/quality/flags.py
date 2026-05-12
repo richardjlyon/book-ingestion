@@ -28,6 +28,10 @@ KNOWN_FLAGS: frozenset[str] = frozenset(
         "llm_assist_used",
         # Whole-document refusal
         "unparseable",
+        # Page labels
+        "page_labels_embedded",
+        "page_labels_inferred",
+        "page_labels_unresolved",
     }
 )
 

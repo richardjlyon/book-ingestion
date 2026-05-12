@@ -37,6 +37,9 @@ def test_known_flags_contains_expected() -> None:
         "unicode_normalization_failure",
         "llm_assist_used",
         "unparseable",
+        "page_labels_embedded",
+        "page_labels_inferred",
+        "page_labels_unresolved",
     }
     assert expected <= KNOWN_FLAGS
 

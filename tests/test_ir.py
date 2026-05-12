@@ -19,10 +19,6 @@ from book_ingestion.ir import (
 )
 
 
-def test_schema_version_is_one_zero() -> None:
-    assert SCHEMA_VERSION == "1.0"
-
-
 def test_book_survey_round_trip() -> None:
     survey = BookSurvey(
         schema_version=SCHEMA_VERSION,
@@ -77,3 +73,36 @@ def test_locator_discriminated_union() -> None:
     assert page.start_page == 1
     # A future SpineRange would also deserialize; for now just check the kind field.
     assert page.kind == "page_range"
+
+
+def test_schema_version_is_one_one() -> None:
+    """M1.1 bumps to 1.1 to invalidate older caches."""
+    assert SCHEMA_VERSION == "1.1"
+
+
+def test_page_range_with_labels_round_trips() -> None:
+    pr = PageRange(start_page=14, end_page=22, start_page_label="10", end_page_label="18")
+    again = PageRange.model_validate(pr.model_dump(mode="json"))
+    assert again == pr
+
+
+def test_paragraph_with_page_label_round_trips() -> None:
+    p = Paragraph(text="hi", page=14, page_label="10", confidence=Confidence.EXCELLENT)
+    again = Paragraph.model_validate(p.model_dump(mode="json"))
+    assert again == p
+    assert again.page_label == "10"
+
+
+def test_book_survey_with_page_labels_round_trips() -> None:
+    survey = BookSurvey(
+        schema_version=SCHEMA_VERSION,
+        source=Source(path="/tmp/x.pdf", sha256="ab" * 32, size_bytes=1, format="pdf"),
+        map=MapInfo(provenance=Provenance.EMBEDDED, confidence=Confidence.GOOD, method="pdf_outline"),
+        quality=Quality(backend="docling_pdf", flags=[]),
+        page_labels={1: "i", 2: "ii", 14: "10"},
+        page_label_provenance="embedded",
+    )
+    again = BookSurvey.model_validate(survey.model_dump(mode="json"))
+    assert again == survey
+    assert again.page_labels[14] == "10"
+    assert again.page_label_provenance == "embedded"

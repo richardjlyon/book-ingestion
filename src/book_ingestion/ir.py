@@ -10,7 +10,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 
 class Provenance(StrEnum):
@@ -35,6 +35,8 @@ class PageRange(BaseModel):
     kind: Literal["page_range"] = "page_range"
     start_page: int
     end_page: int
+    start_page_label: str | None = None
+    end_page_label: str | None = None
 
 
 class SpineRange(BaseModel):
@@ -95,6 +97,7 @@ class Paragraph(BaseModel):
     type: Literal["paragraph"] = "paragraph"
     text: str
     page: int | None = None
+    page_label: str | None = None
     confidence: Confidence
     footnote_refs: list[str] = Field(default_factory=list)
     list_marker: str | None = None
@@ -107,6 +110,7 @@ class Heading(BaseModel):
     text: str
     level: int = Field(ge=1, le=6)
     page: int | None = None
+    page_label: str | None = None
     confidence: Confidence
 
 
@@ -114,6 +118,7 @@ class Table(BaseModel):
     model_config = ConfigDict(frozen=True)
     type: Literal["table"] = "table"
     page: int | None = None
+    page_label: str | None = None
     confidence: Confidence
     rows: list[list[str]] | None = None
     raw_text: str
@@ -124,6 +129,7 @@ class FigureCaption(BaseModel):
     type: Literal["figure_caption"] = "figure_caption"
     text: str
     page: int | None = None
+    page_label: str | None = None
     confidence: Confidence
 
 
@@ -133,6 +139,7 @@ class Footnote(BaseModel):
     id: str
     text: str
     page: int | None = None
+    page_label: str | None = None
     confidence: Confidence
 
 
@@ -140,12 +147,14 @@ class PageBreak(BaseModel):
     model_config = ConfigDict(frozen=True)
     type: Literal["page_break"] = "page_break"
     page: int
+    page_label: str | None = None
 
 
 class FailedRegion(BaseModel):
     model_config = ConfigDict(frozen=True)
     type: Literal["failed_region"] = "failed_region"
     page: int | None = None
+    page_label: str | None = None
     reason: str
     raw_text: str | None = None
 
@@ -167,6 +176,8 @@ class BookSurvey(BaseModel):
     map: MapInfo
     quality: Quality
     cache_paths: dict[str, str] = Field(default_factory=dict)
+    page_labels: dict[int, str] = Field(default_factory=dict)
+    page_label_provenance: Literal["embedded", "inferred", "none"] = "none"
 
 
 class ChapterContent(BaseModel):
