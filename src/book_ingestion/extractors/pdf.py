@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 
 from book_ingestion.metadata import (
     BookMetadata,
+    Creator,
+    CreatorRole,
     ErrorCode,
     Identifier,
     IdentifierCandidate,
@@ -35,6 +37,14 @@ _DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 _ARXIV_RE = re.compile(r"(?:arXiv:\s*|arxiv\.org/abs/)(\d{4}\.\d{4,5})", re.IGNORECASE)
 _ISBN13_RE = re.compile(r"(?:ISBN[ -]*)?(97[89][- 0-9]{10,})", re.IGNORECASE)
 _ISBN10_RE = re.compile(r"(?:ISBN[ -]*)?([0-9][- 0-9]{8,10}[0-9X])", re.IGNORECASE)
+
+_ROLE_PREFIXES: dict[str, CreatorRole] = {
+    "translated by ": CreatorRole.TRANSLATOR,
+    "edited by ": CreatorRole.EDITOR,
+    "with foreword by ": CreatorRole.FOREWORD,
+    "with a foreword by ": CreatorRole.FOREWORD,
+    "illustrated by ": CreatorRole.ILLUSTRATOR,
+}
 
 
 def _extract_identifier(text: str, warnings: list[MetadataWarning]) -> Identifier:
@@ -201,6 +211,67 @@ def _compose_full_title(title: str | None, subtitle: str | None) -> str | None:
     return f"{title}: {subtitle}"
 
 
+def _parse_one_name(raw: str) -> Creator:
+    """Parse a single creator name string into a Creator (role=AUTHOR; caller may override)."""
+    stripped = raw.strip().rstrip(",;")
+    if "," in stripped:
+        # "Last, First [Middle]"
+        last, _, first = stripped.partition(",")
+        last_name = last.strip() or None
+        first_name = first.strip() or None
+    else:
+        parts = stripped.rsplit(None, 1)
+        if len(parts) == 2:
+            first_name, last_name = parts[0].strip() or None, parts[1].strip() or None
+        else:
+            first_name, last_name = None, stripped or None
+    return Creator(first_name=first_name, last_name=last_name, raw=raw)
+
+
+def _split_creator_string(text: str) -> list[str]:
+    """Split a creator string on ' and ' first, then on commas (when likely two people)."""
+    # First split on ' and '
+    parts = [p.strip() for p in re.split(r"\s+and\s+", text) if p.strip()]
+    # If only one part remains, try comma split as a fallback for "X, Y, Z" lists.
+    # (Don't split on commas if the part contains a comma-form name with no 'and' —
+    # that produces a single Creator; comma-list authors typically use 'and' too.)
+    return parts
+
+
+def _extract_creators(text_page_one: str) -> list[Creator]:
+    """Find a creator line on page 1 and parse it into Creator objects."""
+    lines = [line.strip() for line in text_page_one.splitlines() if line.strip()]
+    for raw in lines:
+        lowered = raw.lower()
+        matched_role: CreatorRole | None = None
+        remainder = raw
+        for prefix, role in _ROLE_PREFIXES.items():
+            if lowered.startswith(prefix):
+                matched_role = role
+                remainder = raw[len(prefix):]
+                break
+        if matched_role is None and lowered.startswith("by "):
+            remainder = raw[3:]
+            matched_role = CreatorRole.AUTHOR
+        if matched_role is None:
+            continue
+
+        parts = _split_creator_string(remainder)
+        creators: list[Creator] = []
+        for part in parts:
+            c = _parse_one_name(part)
+            creators.append(c.model_copy(update={"role": matched_role}))
+        if creators:
+            return creators
+
+    # No explicit role prefix — try comma-form "Last, First" on a standalone line.
+    for raw in lines:
+        if re.match(r"^[A-Z][A-Za-z\-]+,\s*[A-Z]", raw):
+            return [_parse_one_name(raw)]
+
+    return []
+
+
 class PdfMetadataExtractor:
     """PDF metadata extractor.
 
@@ -264,10 +335,13 @@ class PdfMetadataExtractor:
 
         full_title = _compose_full_title(title, subtitle)
 
+        creators = _extract_creators(page_texts[0] if page_texts else "")
+
         return BookMetadata(
             identifier=identifier,
             title=title,
             subtitle=subtitle,
             full_title=full_title,
+            creators=creators,
             warnings=warnings,
         )

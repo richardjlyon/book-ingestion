@@ -209,3 +209,71 @@ def test_pdf_info_title_equal_to_stem_is_ignored(tmp_path: Path) -> None:
     c.save()
     m = PdfMetadataExtractor().extract_metadata(p)
     assert m.title == "REAL TITLE"
+
+
+def test_pdf_extracts_single_author_by_form(tmp_path: Path) -> None:
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+    from book_ingestion.metadata import CreatorRole
+
+    p = tmp_path / "single.pdf"
+    c = canvas.Canvas(str(p), pagesize=LETTER)
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(72, 700, "TITLE")
+    c.setFont("Helvetica", 12)
+    c.drawString(72, 650, "by Norman G. Finkelstein")
+    c.save()
+
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert len(m.creators) == 1
+    assert m.creators[0].role == CreatorRole.AUTHOR
+    assert m.creators[0].first_name == "Norman G."
+    assert m.creators[0].last_name == "Finkelstein"
+
+
+def test_pdf_extracts_comma_form_author(tmp_path: Path) -> None:
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+
+    p = tmp_path / "comma.pdf"
+    c = canvas.Canvas(str(p), pagesize=LETTER)
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(72, 700, "TITLE")
+    c.setFont("Helvetica", 12)
+    c.drawString(72, 650, "Finkelstein, Norman G.")
+    c.save()
+
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert len(m.creators) == 1
+    assert m.creators[0].first_name == "Norman G."
+    assert m.creators[0].last_name == "Finkelstein"
+
+
+def test_pdf_preserves_creator_order(tmp_path: Path) -> None:
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+
+    p = tmp_path / "two.pdf"
+    c = canvas.Canvas(str(p), pagesize=LETTER)
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(72, 700, "TITLE")
+    c.setFont("Helvetica", 12)
+    c.drawString(72, 650, "by Jane Smith and John Jones")
+    c.save()
+
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert [c.last_name for c in m.creators] == ["Smith", "Jones"]
+
+
+def test_pdf_detects_translator_role(tmp_path: Path) -> None:
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+    from book_ingestion.metadata import CreatorRole
+
+    p = tmp_path / "trans.pdf"
+    c = canvas.Canvas(str(p), pagesize=LETTER)
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(72, 700, "TITLE")
+    c.setFont("Helvetica", 12)
+    c.drawString(72, 650, "translated by Jane Smith")
+    c.save()
+
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert len(m.creators) == 1
+    assert m.creators[0].role == CreatorRole.TRANSLATOR
