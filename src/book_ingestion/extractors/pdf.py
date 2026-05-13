@@ -46,6 +46,19 @@ _ROLE_PREFIXES: dict[str, CreatorRole] = {
     "illustrated by ": CreatorRole.ILLUSTRATOR,
 }
 
+_PUBLISHER_KEYWORDS = ("Press", "Books", "Publishing", "Verso", "Penguin", "Routledge")
+_KNOWN_PLACES = (
+    "London", "New York", "Cambridge", "Oxford", "Boston", "Chicago",
+    "Edinburgh", "Glasgow", "Manchester", "Paris", "Berlin", "Rome",
+    "Washington", "Toronto", "Sydney", "Melbourne", "Dublin", "Tokyo",
+)
+_YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
+_EDITION_RE = re.compile(
+    r"((?:First|Second|Third|Fourth|Fifth|Revised|Updated|Paperback|Hardback)"
+    r"(?:\s+\w+)*?\s+Edition)",
+    re.IGNORECASE,
+)
+
 
 def _extract_identifier(text: str, warnings: list[MetadataWarning]) -> Identifier:
     """Extract identifier from text: DOI, arXiv, or ISBN."""
@@ -272,6 +285,54 @@ def _extract_creators(text_page_one: str) -> list[Creator]:
     return []
 
 
+def _extract_publisher(imprint_text: str) -> str | None:
+    """Extract publisher from imprint text.
+
+    First checks for 'Published by ' prefix; else looks for any imprint keyword.
+    """
+    for line in imprint_text.splitlines():
+        cleaned = line.strip()
+        if not cleaned:
+            continue
+        if cleaned.lower().startswith("published by "):
+            return cleaned[len("Published by "):].strip()
+        if any(kw in cleaned for kw in _PUBLISHER_KEYWORDS):
+            # Strip a leading "Published by " or similar
+            return cleaned.split("by ", 1)[-1] if cleaned.lower().startswith("published") else cleaned
+    return None
+
+
+def _extract_places(imprint_text: str) -> list[str]:
+    """Extract known place names from imprint text."""
+    places: list[str] = []
+    for line in imprint_text.splitlines():
+        for known in _KNOWN_PLACES:
+            if known in line and known not in places:
+                places.append(known)
+    return places
+
+
+def _extract_dates(imprint_text: str) -> tuple[str | None, str | None]:
+    """Return (date, first_published).
+
+    Strategy: scan all 4-digit years; take min as first_published if it's the
+    earliest © year and there's a distinct later year as `date`. If only one
+    year, that's `date`.
+    """
+    years = sorted({m.group(0) for m in _YEAR_RE.finditer(imprint_text)})
+    if not years:
+        return None, None
+    if len(years) == 1:
+        return years[0], None
+    return years[-1], years[0]  # most recent → date; earliest → first_published
+
+
+def _extract_edition(imprint_text: str) -> str | None:
+    """Extract edition phrase from imprint text via regex."""
+    m = _EDITION_RE.search(imprint_text)
+    return m.group(1) if m else None
+
+
 class PdfMetadataExtractor:
     """PDF metadata extractor.
 
@@ -337,11 +398,26 @@ class PdfMetadataExtractor:
 
         creators = _extract_creators(page_texts[0] if page_texts else "")
 
+        # Imprint block: pages 2..N (page index 1.. in 0-based; pypdf is 0-based)
+        imprint_text = "\n".join(page_texts[1:]) if len(page_texts) > 1 else ""
+        publisher = _extract_publisher(imprint_text)
+        places = _extract_places(imprint_text)
+        if len(places) > 1:
+            warnings.append(MetadataWarning(code=WarningCode.MULTIPLE_PLACES_DETECTED))
+        date, first_published = _extract_dates(imprint_text)
+        edition = _extract_edition(imprint_text)
+
         return BookMetadata(
             identifier=identifier,
             title=title,
             subtitle=subtitle,
             full_title=full_title,
             creators=creators,
+            publisher=publisher,
+            places=places,
+            date=date,
+            first_published=first_published,
+            edition=edition,
+            language="en",  # PDF default per spec §5.6
             warnings=warnings,
         )

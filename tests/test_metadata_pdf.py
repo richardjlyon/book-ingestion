@@ -277,3 +277,48 @@ def test_pdf_detects_translator_role(tmp_path: Path) -> None:
     m = PdfMetadataExtractor().extract_metadata(p)
     assert len(m.creators) == 1
     assert m.creators[0].role == CreatorRole.TRANSLATOR
+
+
+def test_pdf_extracts_publisher_places_date(tmp_path: Path) -> None:
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+    from book_ingestion.metadata import WarningCode
+    from tests.fixtures.pdf import build_pdf_with_imprint
+
+    p = build_pdf_with_imprint(
+        tmp_path / "imp.pdf",
+        title="Sample",
+        subtitle="Sub",
+        isbn_paperback="9781234567897",
+        isbn_hardback="9781234567880",
+        publisher="Example Press",
+        places=["London", "New York"],
+        year=2003,
+        first_published_year=2000,
+    )
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert m.publisher == "Example Press"
+    assert m.places == ["London", "New York"]
+    assert m.date == "2003"
+    assert m.first_published == "2000"
+    codes = {w.code for w in m.warnings}
+    assert WarningCode.MULTIPLE_PLACES_DETECTED in codes
+
+
+def test_pdf_single_year_first_published_none(tmp_path: Path) -> None:
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+    from tests.fixtures.pdf import build_pdf_with_imprint
+
+    p = build_pdf_with_imprint(
+        tmp_path / "one.pdf",
+        title="Sample",
+        subtitle="Sub",
+        isbn_paperback="9781234567897",
+        isbn_hardback="9781234567880",
+        publisher="Example Press",
+        places=["London"],
+        year=2003,
+        first_published_year=None,
+    )
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert m.date == "2003"
+    assert m.first_published is None
