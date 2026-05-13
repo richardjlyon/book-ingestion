@@ -81,7 +81,7 @@ def test_identifier_candidate_frozen() -> None:
     import pydantic
     c = IdentifierCandidate(kind=IdentifierKind.ISBN, value="9781844674879")
     with pytest.raises(pydantic.ValidationError):
-        c.value = "other"  # type: ignore[misc]
+        c.value = "other"
 
 
 def test_identifier_defaults() -> None:
@@ -159,6 +159,7 @@ def test_book_metadata_full() -> None:
         warnings=[MetadataWarning(code=WarningCode.TITLE_ALL_CAPS_IN_SOURCE)],
     )
     assert m.identifier.value == "9781844674879"
+    assert m.full_title is not None
     assert m.full_title.startswith("The Holocaust Industry:")
     assert m.creators[0].last_name == "Finkelstein"
 
