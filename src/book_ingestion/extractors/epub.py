@@ -219,6 +219,51 @@ def _normalise_language(raw: str) -> tuple[str, bool]:
     return primary, primary != raw
 
 
+_YEAR_RE_EPUB = re.compile(r"\b(19|20)\d{2}\b")
+
+
+def _extract_dates_from_opf(meta_elem: ET.Element) -> tuple[str | None, str | None]:
+    """Return (date, first_published)."""
+    publication: str | None = None
+    original: str | None = None
+    fallback: str | None = None
+
+    for dc_date in meta_elem.findall(f"{{{_DC_NS}}}date"):
+        event = (dc_date.get(f"{{{_OPF_NS}}}event") or "").lower()
+        text = (dc_date.text or "").strip()
+        if not text:
+            continue
+        if event == "publication":
+            publication = text
+        elif event == "original-publication":
+            original = text
+        elif fallback is None:
+            fallback = text
+
+    # EPUB3 meta refines/properties for dates
+    for meta in meta_elem.findall(f"{{{_OPF_NS}}}meta"):
+        prop = (meta.get("property") or "").lower()
+        text = (meta.text or "").strip()
+        if not text:
+            continue
+        if prop == "dcterms:issued" and publication is None:
+            publication = text
+        elif prop == "dcterms:created" and original is None:
+            original = text
+
+    if publication is not None or fallback is not None:
+        date = publication or fallback
+        return date, original
+
+    # Fallback: extract a year from dc:rights
+    dc_rights = meta_elem.findtext(f"{{{_DC_NS}}}rights")
+    if dc_rights:
+        m = _YEAR_RE_EPUB.search(dc_rights)
+        if m:
+            return m.group(0), None
+    return None, original
+
+
 class EpubMetadataExtractor:
     """EPUB metadata extractor.
 
@@ -306,6 +351,9 @@ class EpubMetadataExtractor:
                 # Extract identifier
                 identifier = _extract_identifier_from_opf(meta_elem)
 
+                # Extract dates
+                date, first_published = _extract_dates_from_opf(meta_elem)
+
                 return BookMetadata(
                     identifier=identifier,
                     title=title,
@@ -313,6 +361,8 @@ class EpubMetadataExtractor:
                     publisher=publisher,
                     language=language,
                     creators=creators,
+                    date=date,
+                    first_published=first_published,
                     warnings=warnings,
                 )
         except zipfile.BadZipFile as exc:

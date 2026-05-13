@@ -247,3 +247,41 @@ def test_epub_eisbn_only_becomes_value(tmp_path: Path) -> None:
     )
     m = EpubMetadataExtractor().extract_metadata(p)
     assert m.identifier.value == "9780520968431"
+
+
+def test_epub_date_with_publication_event(tmp_path: Path) -> None:
+    p = build_epub(
+        tmp_path / "d.epub",
+        dc_title="X", creators=[], isbn=None, publisher=None,
+        language="en", date="2018",
+    )
+    m = EpubMetadataExtractor().extract_metadata(p)
+    assert m.date == "2018"
+
+
+def test_epub_date_from_rights_year_when_no_dc_date(tmp_path: Path) -> None:
+    # build a custom OPF with dc:rights but no dc:date
+    p = tmp_path / "rights.epub"
+    opf = """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="b">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    <dc:title>X</dc:title>
+    <dc:language>en</dc:language>
+    <dc:rights>Copyright © 2018 by Author</dc:rights>
+  </metadata>
+  <manifest><item id="t" href="t.xhtml" media-type="application/xhtml+xml"/></manifest>
+  <spine><itemref idref="t"/></spine>
+</package>"""
+    import zipfile as _zf
+    with _zf.ZipFile(p, "w", _zf.ZIP_DEFLATED) as zf:
+        zf.writestr(_zf.ZipInfo("mimetype"), "application/epub+zip", compress_type=_zf.ZIP_STORED)
+        zf.writestr("META-INF/container.xml",
+                    '<?xml version="1.0"?><container version="1.0" '
+                    'xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>'
+                    '<rootfile full-path="OEBPS/content.opf" '
+                    'media-type="application/oebps-package+xml"/></rootfiles></container>')
+        zf.writestr("OEBPS/content.opf", opf)
+        zf.writestr("OEBPS/t.xhtml", "<html/>")
+
+    m = EpubMetadataExtractor().extract_metadata(p)
+    assert m.date == "2018"
