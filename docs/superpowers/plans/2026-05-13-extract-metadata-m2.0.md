@@ -1685,9 +1685,11 @@ def _extract_identifier(text: str, warnings: list[MetadataWarning]) -> Identifie
         canon = canonicalize_isbn(raw)
         if len(canon) != 10:
             continue
-        # Avoid double-matching the prefix of an ISBN-13
-        if any(canon == c.value[3:] for c in raw_candidates if len(c.value) == 13):
-            continue
+        # Note: no need to filter ISBN-10s that look like a substring of an
+        # earlier ISBN-13 match. The length-10 filter above plus
+        # `dedupe_isbn_candidates` already handle the collision case correctly:
+        # for a same-book pair, the ISBN-13's last 10 digits ≠ the ISBN-10
+        # (different check digit), and dedupe collapses by ISBN-13 form.
         window = text[max(0, m.start() - 80) : m.end() + 80]
         raw_candidates.append(IdentifierCandidate(
             kind=IdentifierKind.ISBN, value=canon,
@@ -3200,12 +3202,21 @@ def _extract_creators_from_opf(
                 detail=f"creator '{text.strip()}' had trailing ; or ,",
             ))
 
-        # Split multi-creator strings
-        parts = _split_multi_creator(base_text)
-        for i, part in enumerate(parts):
-            # Preserve raw on the *first* parsed creator; multi-creators carry their split part as raw.
-            raw_source = text if (i == 0 and not file_as and len(parts) == 1) else part
-            creators.append(_parse_one_creator_string(raw_source, role))
+        # Split multi-creator strings. For name *parsing* we prefer the
+        # sort-form in opf:file-as when present (it's easier to split into
+        # last/first). For the `raw` field per spec §6.3, we always preserve
+        # the original element text (single-creator case) or the original
+        # split part (multi-creator case) — never the file-as derivation.
+        parsing_source = base_text
+        raw_source_full = text  # always the element text — never file_as
+        parts_for_parsing = _split_multi_creator(parsing_source)
+        parts_for_raw = _split_multi_creator(raw_source_full) if len(parts_for_parsing) > 1 else [raw_source_full]
+        for i, parse_part in enumerate(parts_for_parsing):
+            raw_part = parts_for_raw[i] if i < len(parts_for_raw) else parse_part
+            # _parse_one_creator_string parses names from `raw_part`; we then
+            # set `raw` explicitly so it preserves the element-text form.
+            c = _parse_one_creator_string(parse_part, role)
+            creators.append(c.model_copy(update={"raw": raw_part}))
 
     return creators
 ```
