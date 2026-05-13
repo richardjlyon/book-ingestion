@@ -44,3 +44,26 @@ def test_pdf_fixture_encrypted_builds(tmp_path: Path) -> None:
 def test_pdf_fixture_scanned_builds(tmp_path: Path) -> None:
     p = build_scanned_pdf(tmp_path / "scanned.pdf")
     assert p.exists() and p.stat().st_size > 0
+
+
+def test_pdf_encrypted_returns_error(tmp_path: Path) -> None:
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+    from book_ingestion.metadata import BookMetadata, ErrorCode
+
+    p = build_encrypted_pdf(tmp_path / "enc.pdf", password="secret")
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert isinstance(m, BookMetadata)
+    assert m.error == ErrorCode.ENCRYPTED
+    assert m.title is None
+    assert m.creators == []
+
+
+def test_pdf_scanned_returns_no_text_warning(tmp_path: Path) -> None:
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+    from book_ingestion.metadata import WarningCode
+
+    p = build_scanned_pdf(tmp_path / "scanned.pdf")
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert m.error is None
+    codes = {w.code for w in m.warnings}
+    assert WarningCode.NO_TEXT_EXTRACTED in codes
