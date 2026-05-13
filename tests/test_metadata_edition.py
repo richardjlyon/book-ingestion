@@ -63,6 +63,17 @@ def test_classify_case_insensitive() -> None:
     assert classify_edition_hint("PAPERBACK") == EditionHint.PAPERBACK
 
 
+def test_classify_hb_bare() -> None:
+    """Bare 'hb' token should classify as hardback via the padded-bookend check."""
+    assert classify_edition_hint("hb") == EditionHint.HARDBACK
+
+
+def test_classify_hb_in_context() -> None:
+    """Hb inside other words should NOT classify as hardback."""
+    assert classify_edition_hint("kombucha") == EditionHint.UNSPECIFIED
+    assert classify_edition_hint("hbox container") == EditionHint.UNSPECIFIED
+
+
 # --- pick_identifier_value ---------------------------------------------------
 
 def _isbn(value: str, hint: EditionHint = EditionHint.UNSPECIFIED) -> IdentifierCandidate:

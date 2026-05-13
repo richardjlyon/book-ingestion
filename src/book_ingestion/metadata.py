@@ -205,7 +205,9 @@ def dedupe_isbn_candidates(
 # --- Edition hint classification and priority picking -----------------------
 
 _PAPERBACK_KEYWORDS = ("paperback", "pbk", "softcover", "trade paperback")
-_HARDBACK_KEYWORDS = ("hardback", "hardcover", "cloth", " hb ")
+# " hb " (bare two-letter token) handled below via padded-bookend check —
+# substring match alone can't differentiate "hb" from "kombucha".
+_HARDBACK_KEYWORDS = ("hardback", "hardcover", "cloth")
 _EBOOK_KEYWORDS = ("pdf", "ebook", "kindle", "epub", "digital")
 
 
