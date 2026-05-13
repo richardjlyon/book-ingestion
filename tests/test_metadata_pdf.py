@@ -410,6 +410,47 @@ def test_pdf_publisher_prefers_shortest_matching_line(tmp_path: Path) -> None:
     assert m.publisher == "Verso"
 
 
+def test_pdf_extracts_all_caps_author_line(tmp_path: Path) -> None:
+    """ALL-CAPS author name on its own line (no 'by' prefix, no comma form)."""
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+
+    p = tmp_path / "allcaps.pdf"
+    c = canvas.Canvas(str(p), pagesize=LETTER)
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(72, 700, "THE EXAMPLE BOOK")
+    c.drawString(72, 670, "A SAMPLE SUBTITLE OF SUFFICIENT LENGTH")
+    c.setFont("Helvetica", 12)
+    c.drawString(72, 630, "JANE Q. SMITH")
+    c.save()
+
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert len(m.creators) == 1
+    assert m.creators[0].last_name == "SMITH"
+    assert m.creators[0].first_name == "JANE Q."
+
+
+def test_pdf_edition_picks_latest_when_multiple(tmp_path: Path) -> None:
+    """Multiple 'Nth Paperback Edition' phrases — latest wins."""
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+
+    p2 = tmp_path / "multi-edition2.pdf"
+    c = canvas.Canvas(str(p2), pagesize=LETTER)
+    c.setTitle("Multi")
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(72, 700, "TITLE")
+    c.showPage()
+    c.setFont("Helvetica", 10)
+    c.drawString(72, 720, "First paperback edition first published 2001")
+    c.drawString(72, 700, "Second paperback edition first published 2003")
+    c.drawString(72, 680, "Verso")
+    c.drawString(72, 660, "London")
+    c.drawString(72, 640, "Paperback ISBN 9781234567897")
+    c.save()
+
+    m = PdfMetadataExtractor().extract_metadata(p2)
+    assert m.edition == "Second paperback edition"
+
+
 def test_pdf_edition_hint_fallback_from_edition_phrase(tmp_path: Path) -> None:
     """Edition-hint is hoisted from the edition phrase when ISBN lines lack a window hint."""
     from book_ingestion.extractors.pdf import PdfMetadataExtractor

@@ -56,7 +56,7 @@ _KNOWN_PLACES = (
 _YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
 _EDITION_RE = re.compile(
     r"((?:First|Second|Third|Fourth|Fifth|Revised|Updated|Paperback|Hardback)"
-    r"(?:\s+\w+)*?\s+Edition)",
+    r"(?:[^\S\n]+\w+)*?[^\S\n]+Edition)",
     re.IGNORECASE,
 )
 
@@ -252,9 +252,47 @@ def _split_creator_string(text: str) -> list[str]:
     return parts
 
 
-def _extract_creators(text_page_one: str) -> list[Creator]:
+def _is_likely_author_line(raw: str) -> bool:
+    """Heuristic: line is a plausible standalone author name.
+
+    Returns True for lines like:
+      "Norman G. Finkelstein"
+      "NORMAN G. FINKELSTEIN"
+      "Jane Smith"
+      "J. R. R. Tolkien"
+    Returns False for lines with digits, too few/many tokens, or
+    lowercase-start tokens.
+    """
+    if any(c.isdigit() for c in raw):
+        return False
+    tokens = raw.split()
+    if not (2 <= len(tokens) <= 5):
+        return False
+    for tok in tokens:
+        stripped = tok.rstrip(".")
+        if not stripped:
+            return False
+        first = stripped[0]
+        rest = stripped[1:]
+        # Each token must start with a capital, and the rest must be all-caps,
+        # all-lower (proper-noun case), or empty (single-letter initial).
+        if not first.isupper():
+            return False
+        if rest and not (rest.isupper() or rest.islower()):
+            return False
+    return True
+
+
+def _extract_creators(
+    text_page_one: str,
+    *,
+    title: str | None = None,
+    subtitle: str | None = None,
+) -> list[Creator]:
     """Find a creator line on page 1 and parse it into Creator objects."""
     lines = [line.strip() for line in text_page_one.splitlines() if line.strip()]
+    exclude = {title or "", subtitle or ""}
+
     for raw in lines:
         lowered = raw.lower()
         matched_role: CreatorRole | None = None
@@ -281,6 +319,16 @@ def _extract_creators(text_page_one: str) -> list[Creator]:
     # No explicit role prefix — try comma-form "Last, First" on a standalone line.
     for raw in lines:
         if re.match(r"^[A-Z][A-Za-z\-]+,\s*[A-Z]", raw):
+            return [_parse_one_name(raw)]
+
+    # Last resort: standalone name-like line (e.g. ALL-CAPS "NORMAN G. FINKELSTEIN").
+    for raw in lines:
+        if raw in exclude:
+            continue
+        # Skip lines that look like edition phrases (e.g. "Second Paperback Edition")
+        if _EDITION_RE.fullmatch(raw.strip()):
+            continue
+        if _is_likely_author_line(raw):
             return [_parse_one_name(raw)]
 
     return []
@@ -344,9 +392,14 @@ def _extract_dates(imprint_text: str) -> tuple[str | None, str | None]:
 
 
 def _extract_edition(imprint_text: str) -> str | None:
-    """Extract edition phrase from imprint text via regex."""
-    m = _EDITION_RE.search(imprint_text)
-    return m.group(1) if m else None
+    """Extract edition phrase from imprint text via regex.
+
+    When multiple edition phrases appear (e.g. "First paperback edition …
+    Second paperback edition"), returns the last match — mirroring the
+    latest-wins semantics of _extract_dates.
+    """
+    matches = _EDITION_RE.findall(imprint_text)
+    return matches[-1] if matches else None
 
 
 class PdfMetadataExtractor:
@@ -458,7 +511,7 @@ class PdfMetadataExtractor:
 
         full_title = _compose_full_title(title, subtitle)
 
-        creators = _extract_creators(title_page_text)
+        creators = _extract_creators(title_page_text, title=title, subtitle=subtitle)
 
         # Imprint block: at most the 2 pages immediately following the title
         # page (indices title_page_idx+1 .. title_page_idx+2). Limiting to 2

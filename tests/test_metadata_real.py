@@ -57,6 +57,20 @@ def test_holocaust_industry_pdf_acceptance() -> None:
     # ISBN-10 / ISBN-13 dedupe should keep MULTIPLE_ISBNS_DETECTED quiet
     assert WarningCode.MULTIPLE_ISBNS_DETECTED not in codes
 
+    # Creator — ALL-CAPS on a standalone line on page 1
+    assert len(m.creators) >= 1
+    assert m.creators[0].last_name == "FINKELSTEIN"
+    # first_name is "NORMAN G." (raw ALL-CAPS preserved)
+    assert m.creators[0].first_name is not None
+    assert "NORMAN" in m.creators[0].first_name
+    assert "G" in m.creators[0].first_name  # the initial
+
+    # Edition — latest of "First paperback edition" / "Second paperback edition"
+    # The PDF source has lowercase "second paperback edition"; case is preserved.
+    assert m.edition is not None
+    assert "second" in m.edition.lower()
+    assert "paperback" in m.edition.lower()
+
     # Publication
     assert m.publisher == "Verso"
     assert m.places == ["London", "New York"]
