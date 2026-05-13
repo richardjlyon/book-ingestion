@@ -9,12 +9,15 @@ See `docs/superpowers/specs/2026-05-13-extract-metadata-design.md` §6.
 from __future__ import annotations
 
 import logging
+import re
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
 from book_ingestion.metadata import (
     BookMetadata,
+    Creator,
+    CreatorRole,
     ErrorCode,
     MetadataWarning,
     WarningCode,
@@ -27,6 +30,108 @@ _APPLE_DRM_NS = "com.apple.iBooks"
 _DC_NS = "http://purl.org/dc/elements/1.1/"
 _OPF_NS = "http://www.idpf.org/2007/opf"
 _CONTAINER_NS = "urn:oasis:names:tc:opendocument:xmlns:container"
+
+_OPF_ROLE_MAP: dict[str, CreatorRole] = {
+    "aut": CreatorRole.AUTHOR,
+    "edt": CreatorRole.EDITOR,
+    "trl": CreatorRole.TRANSLATOR,
+    "ill": CreatorRole.ILLUSTRATOR,
+}
+
+
+def _strip_creator_punct(raw: str) -> tuple[str, bool]:
+    """Strip trailing whitespace + ; , and . from a creator string.
+
+    Returns (stripped, flag_warning) — flag is True only when `;` or `,` was stripped.
+    """
+    s = raw
+    flag = False
+    # First trim trailing whitespace and periods silently
+    while s and s[-1] in (" ", "\t", "."):
+        s = s[:-1]
+    # Then strip ; and , and flag
+    while s and s[-1] in (";", ","):
+        flag = True
+        s = s[:-1]
+    # Strip remaining trailing whitespace again
+    s = s.rstrip()
+    return s, flag
+
+
+def _parse_one_creator_string(raw: str, role: CreatorRole) -> Creator:
+    """Parse 'Last, First' or 'First Last' into a Creator. raw is preserved."""
+    stripped, _ = _strip_creator_punct(raw)
+    if "," in stripped:
+        last, _, first = stripped.partition(",")
+        last_name = last.strip() or None
+        first_name = first.strip().rstrip(".") or None
+    else:
+        parts = stripped.rsplit(None, 1)
+        if len(parts) == 2:
+            first_name = parts[0].strip() or None
+            last_name = parts[1].strip() or None
+        else:
+            first_name, last_name = None, stripped or None
+    return Creator(role=role, first_name=first_name, last_name=last_name, raw=raw)
+
+
+def _split_multi_creator(s: str) -> list[str]:
+    """Split 'Smith, J. and Jones, K.' into ['Smith, J.', 'Jones, K.']."""
+    return [p.strip() for p in re.split(r"\s+and\s+", s) if p.strip()]
+
+
+def _extract_creators_from_opf(
+    meta_elem: ET.Element,
+    warnings: list[MetadataWarning],
+) -> list[Creator]:
+    """Walk dc:creator elements in document order; resolve role; split multi-creator strings."""
+    creators: list[Creator] = []
+    # Build EPUB3 refines map: id -> role (for <meta refines="#id" property="role">aut</meta>)
+    refines_role: dict[str, str] = {}
+    for meta in meta_elem.findall(f"{{{_OPF_NS}}}meta"):
+        refines = meta.get("refines", "")
+        if meta.get("property") == "role" and refines.startswith("#"):
+            text = (meta.text or "").strip()
+            if text:
+                refines_role[refines[1:]] = text
+
+    for elem in meta_elem.findall(f"{{{_DC_NS}}}creator"):
+        text = elem.text or ""
+        if not text.strip():
+            continue
+        # Resolve role
+        role_str = elem.get(f"{{{_OPF_NS}}}role") or refines_role.get(elem.get("id", ""), "aut")
+        role = _OPF_ROLE_MAP.get(role_str, CreatorRole.AUTHOR)
+
+        # Prefer opf:file-as if present
+        file_as = elem.get(f"{{{_OPF_NS}}}file-as")
+        base_text = file_as if file_as else text
+
+        # Punctuation flag
+        _stripped, flag = _strip_creator_punct(base_text)
+        if flag and not any(w.code == WarningCode.DC_CREATOR_TRAILING_PUNCTUATION for w in warnings):
+            warnings.append(MetadataWarning(
+                code=WarningCode.DC_CREATOR_TRAILING_PUNCTUATION,
+                detail=f"creator '{text.strip()}' had trailing ; or ,",
+            ))
+
+        # Split multi-creator strings. For name *parsing* we prefer the
+        # sort-form in opf:file-as when present (it's easier to split into
+        # last/first). For the `raw` field per spec §6.3, we always preserve
+        # the original element text (single-creator case) or the original
+        # split part (multi-creator case) — never the file-as derivation.
+        parsing_source = base_text
+        raw_source_full = text  # always the element text — never file_as
+        parts_for_parsing = _split_multi_creator(parsing_source)
+        parts_for_raw = _split_multi_creator(raw_source_full) if len(parts_for_parsing) > 1 else [raw_source_full]
+        for i, parse_part in enumerate(parts_for_parsing):
+            raw_part = parts_for_raw[i] if i < len(parts_for_raw) else parse_part
+            # _parse_one_creator_string parses names from `raw_part`; we then
+            # set `raw` explicitly so it preserves the element-text form.
+            c = _parse_one_creator_string(parse_part, role)
+            creators.append(c.model_copy(update={"raw": raw_part}))
+
+    return creators
 
 
 def _find_opf_path(container_xml: bytes) -> str | None:
@@ -128,11 +233,15 @@ class EpubMetadataExtractor:
                 else:
                     language = None
 
+                # Extract creators
+                creators = _extract_creators_from_opf(meta_elem, warnings)
+
                 return BookMetadata(
                     title=title,
                     full_title=title,
                     publisher=publisher,
                     language=language,
+                    creators=creators,
                     warnings=warnings,
                 )
         except zipfile.BadZipFile as exc:
