@@ -289,17 +289,28 @@ def _extract_publisher(imprint_text: str) -> str | None:
     """Extract publisher from imprint text.
 
     First checks for 'Published by ' prefix; else looks for any imprint keyword.
+    Prefers the shortest matching line (standalone publisher name beats a long
+    description like 'First published by Verso 2000').
     """
+    best: str | None = None
     for line in imprint_text.splitlines():
         cleaned = line.strip()
         if not cleaned:
             continue
-        if cleaned.lower().startswith("published by "):
-            return cleaned[len("Published by "):].strip()
-        if any(kw in cleaned for kw in _PUBLISHER_KEYWORDS):
-            # Strip a leading "Published by " or similar
-            return cleaned.split("by ", 1)[-1] if cleaned.lower().startswith("published") else cleaned
-    return None
+        low = cleaned.lower()
+        if low.startswith("published by "):
+            candidate = cleaned[len("Published by "):].strip()
+            if best is None:
+                best = candidate
+            continue
+        for kw in _PUBLISHER_KEYWORDS:
+            if kw not in cleaned:
+                continue
+            # Prefer shorter lines: a standalone "Verso" beats "First published by Verso 2000"
+            if best is None or len(cleaned) < len(best):
+                best = cleaned
+            break
+    return best
 
 
 def _extract_places(imprint_text: str) -> list[str]:
@@ -315,9 +326,13 @@ def _extract_places(imprint_text: str) -> list[str]:
 def _extract_dates(imprint_text: str) -> tuple[str | None, str | None]:
     """Return (date, first_published).
 
-    Strategy: scan all 4-digit years; take min as first_published if it's the
-    earliest © year and there's a distinct later year as `date`. If only one
-    year, that's `date`.
+    Strategy: scan all 4-digit years in the imprint block; take max as `date`
+    (most recent edition) and min as `first_published` when there are multiple
+    distinct years; single year → `date` only.
+
+    The imprint block is deliberately limited to the 2 pages immediately
+    following the title page, so incidental years from blurb/review pages are
+    excluded before this function is called.
     """
     years = sorted({m.group(0) for m in _YEAR_RE.finditer(imprint_text)})
     if not years:
@@ -382,30 +397,104 @@ class PdfMetadataExtractor:
 
         # Subsequent tasks populate title, creators, etc.
         warnings: list[MetadataWarning] = []
+
+        # Find the first non-empty page for title/creator mining. Real books
+        # often have a blank page 0 (verso/half-title) with the full title page
+        # on page 1.
+        title_page_text = ""
+        title_page_idx = 0
+        for idx, pt in enumerate(page_texts):
+            if pt.strip():
+                title_page_text = pt
+                title_page_idx = idx
+                break
+
         identifier = _extract_identifier(joined, warnings)
 
+        # Title strategy:
+        #   1. Always text-mine the title page for ALL-CAPS detection and subtitle.
+        #   2. If /Info is present, compare with text-mined result:
+        #      a. If they are the same title in different case (text-mined is
+        #         ALL-CAPS, /Info is mixed-case) → prefer text-mined (calibre
+        #         and similar converters normalise the case, losing the source
+        #         formatting).
+        #      b. If text-mined starts with /Info and is longer → text mining
+        #         merged title+subtitle; split at /Info boundary.
+        #      c. Otherwise → use /Info as title; use any text-mined subtitle.
+        #   3. If no /Info: use text-mined title/subtitle.
+        #   4. Fallback: None.
+        mined_title, mined_subtitle = _mine_title_from_page_one(title_page_text)
         info_title = _info_title(reader, path)
-        if info_title is not None:
-            title: str | None = info_title
-            subtitle: str | None = None  # /Info has no subtitle field
+        title: str | None
+        subtitle: str | None
+        if info_title is not None and mined_title is not None:
+            mined_upper = mined_title.upper()
+            info_upper = info_title.upper()
+            if mined_upper == info_upper:
+                # Same title, different case: prefer ALL-CAPS source form.
+                title = mined_title
+                subtitle = mined_subtitle
+            elif mined_title.upper().startswith(info_upper) and len(mined_title) > len(info_title):
+                # Text mining merged title+subtitle into one block; split it.
+                title = info_title
+                remainder = mined_title[len(info_title):].lstrip()
+                subtitle = remainder if remainder else mined_subtitle
+            else:
+                title = info_title
+                subtitle = mined_subtitle
+        elif info_title is not None:
+            title = info_title
+            subtitle = None
+        elif mined_title is not None:
+            title = mined_title
+            subtitle = mined_subtitle
         else:
-            title, subtitle = _mine_title_from_page_one(page_texts[0] if page_texts else "")
+            title = None
+            subtitle = None
 
         if title is not None and _is_all_caps(title):
             warnings.append(MetadataWarning(code=WarningCode.TITLE_ALL_CAPS_IN_SOURCE))
 
         full_title = _compose_full_title(title, subtitle)
 
-        creators = _extract_creators(page_texts[0] if page_texts else "")
+        creators = _extract_creators(title_page_text)
 
-        # Imprint block: pages 2..N (page index 1.. in 0-based; pypdf is 0-based)
-        imprint_text = "\n".join(page_texts[1:]) if len(page_texts) > 1 else ""
+        # Imprint block: at most the 2 pages immediately following the title
+        # page (indices title_page_idx+1 .. title_page_idx+2). Limiting to 2
+        # pages avoids picking up blurb/review pages that contain city names
+        # (e.g. "Chicago") or incidental years (e.g. "1998") that would corrupt
+        # the places and date fields.
+        imprint_pages = page_texts[title_page_idx + 1 : title_page_idx + 3]
+        imprint_text = "\n".join(imprint_pages)
         publisher = _extract_publisher(imprint_text)
         places = _extract_places(imprint_text)
         if len(places) > 1:
             warnings.append(MetadataWarning(code=WarningCode.MULTIPLE_PLACES_DETECTED))
         date, first_published = _extract_dates(imprint_text)
         edition = _extract_edition(imprint_text)
+
+        # Edition-hint fallback for ISBNs: when all candidates show UNSPECIFIED,
+        # derive a hint from the edition phrase found in the imprint block.
+        # Real copyright pages often name the edition ("Second Paperback Edition")
+        # several lines above the ISBN lines, beyond the ±20-char window.
+        if edition is not None and identifier.candidates:
+            from book_ingestion.metadata import EditionHint as _EH
+            all_unspecified = all(
+                c.edition_hint == _EH.UNSPECIFIED for c in identifier.candidates
+            )
+            if all_unspecified:
+                fallback_hint = classify_edition_hint(edition)
+                if fallback_hint != _EH.UNSPECIFIED:
+                    new_candidates = [
+                        c.model_copy(update={"edition_hint": fallback_hint})
+                        for c in identifier.candidates
+                    ]
+                    from book_ingestion.metadata import Identifier as _Id
+                    identifier = _Id(
+                        kind=identifier.kind,
+                        value=identifier.value,
+                        candidates=new_candidates,
+                    )
 
         return BookMetadata(
             identifier=identifier,
