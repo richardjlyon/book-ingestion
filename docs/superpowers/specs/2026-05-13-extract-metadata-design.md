@@ -252,7 +252,8 @@ Exceptions raised inside pypdf (e.g. `PdfReadError` on corruption) are caught at
 - **arXiv** — patterns `arXiv:\s*\d{4}\.\d{4,5}` and `arxiv\.org/abs/\d{4}\.\d{4,5}` (case-insensitive). First match wins.
 - **ISBN** — patterns `ISBN[ -]*(97[89][- 0-9]{10,})` and `ISBN[ -]*([0-9][- 0-9]{8,10}[0-9X])` (case-insensitive). All matches collected; canonicalize by stripping separators (digits-only; final `X` allowed for ISBN-10).
 - **Multi-ISBN classification.** For each ISBN match, look in a ~80-char window for edition-hint keywords: paperback / pbk / softcover / trade paperback → `PAPERBACK`; hardback / hardcover / hb / cloth → `HARDBACK`; pdf / ebook / kindle / epub / digital → `EBOOK`. No match → `UNSPECIFIED`.
-- **Priority for `identifier.value`.** First `PAPERBACK`, else first `HARDBACK`, else first `UNSPECIFIED`, else first `EBOOK`. All collected hits go into `candidates`. Flag `MULTIPLE_ISBNS_DETECTED` when more than one ISBN is found.
+- **ISBN-10 / ISBN-13 equivalence dedupe.** After canonicalization, compute the ISBN-13 form of any ISBN-10 (prefix `"978"` + first 9 digits + recomputed check digit) and treat the pair as one candidate. Holocaust Industry prints both `"1-84467-487-8"` (ISBN-10) and `"978-1-84467-487-9"` (ISBN-13) for the same paperback; they collapse to one. The edition hint of the ISBN-13 form (when both forms carry one) wins on conflict.
+- **Priority for `identifier.value`.** First `PAPERBACK`, else first `HARDBACK`, else first `UNSPECIFIED`, else first `EBOOK`. All deduped candidates go into `candidates`. Flag `MULTIPLE_ISBNS_DETECTED` only when the **deduped** set has more than one entry — i.e., a paperback-vs-hardback or print-vs-ebook split, not the ISBN-10 / ISBN-13 same-edition pair.
 
 No `isbnlib` dependency. Canonicalization is a one-liner; validation is upstream's problem.
 
@@ -286,6 +287,7 @@ Name parsing:
 - `"Finkelstein, Norman G."` — comma-form; `last_name = "Finkelstein"`, `first_name = "Norman G."`.
 - Single token — `last_name` only, `first_name = None`.
 - `raw` always populated with the original substring (post-whitespace-normalisation, pre-name-parsing).
+- **Source order preserved.** Multiple creators are returned in the order they appear in the source text. No alphabetical or otherwise re-ordering — citation order is meaningful.
 
 ### 5.5 Publisher / places / date / edition
 
@@ -344,9 +346,10 @@ Name parsing:
 
 - Prefer `opf:file-as` attribute (sort-form, `"Finkelstein, Norman"`). Split on first `, ` → `(last, first)`.
 - Else parse element text the same way.
-- Strip trailing whitespace and punctuation (`; `, `, `, `;`, `.`). Flag `DC_CREATOR_TRAILING_PUNCTUATION` whenever stripping changed the string.
+- Strip trailing whitespace and punctuation: `;`, `,`, `.` (plus trailing spaces). Trailing periods are routine on initials and abbreviations (`"Smith, J."`, `"Jones, M.A."`) — strip silently. Flag `DC_CREATOR_TRAILING_PUNCTUATION` **only** when a `;` or `,` was stripped (the Gaza case: `"Finkelstein, Norman; "`).
 - `raw` always populated with the original element text (pre-strip).
 - Multi-creator strings (`"Smith, J. and Jones, K."` in one `dc:creator`) — split on ` and ` then parse each as a Creator.
+- **Source order preserved.** Multiple creators are returned in OPF element order (and within a multi-creator string, in the order they appeared in the string). No alphabetical or otherwise re-ordering — citation order is meaningful.
 
 ### 6.4 Date
 
