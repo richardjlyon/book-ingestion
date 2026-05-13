@@ -18,9 +18,16 @@ from book_ingestion.metadata import (
     BookMetadata,
     Creator,
     CreatorRole,
+    EditionHint,
     ErrorCode,
+    Identifier,
+    IdentifierCandidate,
+    IdentifierKind,
     MetadataWarning,
     WarningCode,
+    canonicalize_isbn,
+    dedupe_isbn_candidates,
+    pick_identifier_value,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,6 +85,66 @@ def _parse_one_creator_string(raw: str, role: CreatorRole) -> Creator:
 def _split_multi_creator(s: str) -> list[str]:
     """Split 'Smith, J. and Jones, K.' into ['Smith, J.', 'Jones, K.']."""
     return [p.strip() for p in re.split(r"\s+and\s+", s) if p.strip()]
+
+
+def _extract_identifier_from_opf(meta_elem: ET.Element) -> Identifier:
+    """Extract ISBN identifier from dc:identifier and <meta name="isbn"|"eisbn">.
+
+    Handles:
+    - <dc:identifier opf:scheme="ISBN">...</dc:identifier>
+    - <dc:identifier>urn:isbn:...</dc:identifier>
+    - <meta name="isbn" content="..."/> (print ISBN, UNSPECIFIED hint)
+    - <meta name="eisbn" content="..."/> (electronic ISBN, EBOOK hint)
+
+    Returns Identifier with deduplicated candidates and selected value via pick_identifier_value.
+    """
+    raw_candidates: list[IdentifierCandidate] = []
+
+    # dc:identifier with opf:scheme="ISBN" or urn:isbn: prefix
+    for ident in meta_elem.findall(f"{{{_DC_NS}}}identifier"):
+        text = (ident.text or "").strip()
+        scheme = (ident.get(f"{{{_OPF_NS}}}scheme") or "").lower()
+        is_isbn = False
+        value = text
+        if scheme == "isbn":
+            is_isbn = True
+        elif text.lower().startswith("urn:isbn:"):
+            is_isbn = True
+            value = text[len("urn:isbn:"):]
+        if is_isbn:
+            canon = canonicalize_isbn(value)
+            raw_candidates.append(IdentifierCandidate(
+                kind=IdentifierKind.ISBN, value=canon,
+                edition_hint=EditionHint.UNSPECIFIED,
+            ))
+
+    # <meta name="isbn"> and <meta name="eisbn">
+    for meta in meta_elem.findall(f"{{{_OPF_NS}}}meta"):
+        name = (meta.get("name") or "").lower()
+        content = meta.get("content") or ""
+        if not content:
+            continue
+        if name == "isbn":
+            raw_candidates.append(IdentifierCandidate(
+                kind=IdentifierKind.ISBN, value=canonicalize_isbn(content),
+                edition_hint=EditionHint.UNSPECIFIED,
+            ))
+        elif name == "eisbn":
+            raw_candidates.append(IdentifierCandidate(
+                kind=IdentifierKind.ISBN, value=canonicalize_isbn(content),
+                edition_hint=EditionHint.EBOOK,
+            ))
+
+    if not raw_candidates:
+        return Identifier()
+
+    deduped = dedupe_isbn_candidates(raw_candidates)
+    selected_value: str | None = pick_identifier_value(deduped)
+    return Identifier(
+        kind=IdentifierKind.ISBN if selected_value else None,
+        value=selected_value,
+        candidates=deduped,
+    )
 
 
 def _extract_creators_from_opf(
@@ -236,7 +303,11 @@ class EpubMetadataExtractor:
                 # Extract creators
                 creators = _extract_creators_from_opf(meta_elem, warnings)
 
+                # Extract identifier
+                identifier = _extract_identifier_from_opf(meta_elem)
+
                 return BookMetadata(
+                    identifier=identifier,
                     title=title,
                     full_title=title,
                     publisher=publisher,

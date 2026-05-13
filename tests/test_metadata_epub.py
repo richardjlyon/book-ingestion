@@ -4,7 +4,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from book_ingestion.extractors.epub import EpubMetadataExtractor
-from book_ingestion.metadata import BookMetadata, CreatorRole, ErrorCode, WarningCode
+from book_ingestion.metadata import (
+    BookMetadata,
+    CreatorRole,
+    EditionHint,
+    ErrorCode,
+    IdentifierKind,
+    WarningCode,
+)
 from tests.fixtures.epub import (
     build_epub,
     build_epub_with_drm,
@@ -196,3 +203,47 @@ def test_epub_creator_order_preserved(tmp_path: Path) -> None:
     )
     m = EpubMetadataExtractor().extract_metadata(p)
     assert [c.last_name for c in m.creators] == ["Smith", "Jones"]
+
+
+def test_epub_extracts_print_isbn(tmp_path: Path) -> None:
+    p = build_epub(
+        tmp_path / "isbn.epub",
+        dc_title="X",
+        creators=[],
+        isbn="9780520295711",
+        publisher=None, language="en",
+    )
+    m = EpubMetadataExtractor().extract_metadata(p)
+    assert m.identifier.kind == IdentifierKind.ISBN
+    assert m.identifier.value == "9780520295711"
+
+
+def test_epub_eisbn_in_candidates_with_ebook_hint(tmp_path: Path) -> None:
+    p = build_epub(
+        tmp_path / "ei.epub",
+        dc_title="X",
+        creators=[],
+        isbn="9780520295711",
+        eisbn="9780520968431",
+        publisher=None, language="en",
+    )
+    m = EpubMetadataExtractor().extract_metadata(p)
+    assert m.identifier.value == "9780520295711"
+    eisbn_candidate = next(
+        (c for c in m.identifier.candidates if c.value == "9780520968431"), None,
+    )
+    assert eisbn_candidate is not None
+    assert eisbn_candidate.edition_hint == EditionHint.EBOOK
+
+
+def test_epub_eisbn_only_becomes_value(tmp_path: Path) -> None:
+    p = build_epub(
+        tmp_path / "eonly.epub",
+        dc_title="X",
+        creators=[],
+        isbn=None,
+        eisbn="9780520968431",
+        publisher=None, language="en",
+    )
+    m = EpubMetadataExtractor().extract_metadata(p)
+    assert m.identifier.value == "9780520968431"
