@@ -11,12 +11,21 @@ from book_ingestion.backends.base import Backend, Context
 from book_ingestion.backends.pdf_docling import PdfDoclingBackend
 from book_ingestion.cache import Cache
 from book_ingestion.detect import detect_format
+from book_ingestion.extractors.base import MetadataExtractor
+from book_ingestion.extractors.epub import EpubMetadataExtractor
+from book_ingestion.extractors.pdf import PdfMetadataExtractor
 from book_ingestion.ir import BookSurvey, ChapterContent
+from book_ingestion.metadata import BookMetadata
 
 _BACKENDS: dict[str, Backend] = {
     "pdf": PdfDoclingBackend(),
     # "epub": EpubBackend(),     # M2
     # "pdf_ocr": OcrBackend(),   # M3
+}
+
+_EXTRACTORS: dict[str, MetadataExtractor] = {
+    "pdf": PdfMetadataExtractor(),
+    "epub": EpubMetadataExtractor(),
 }
 
 
@@ -51,3 +60,14 @@ def extract_chapter(
     backend = _backend_for(path)
     ctx = Context(cache=Cache(root=cache_dir), use_cache=use_cache)
     return backend.extract_chapter(path, chapter_index, ctx=ctx)
+
+
+def extract_metadata(path: Path, *, pages: int = 6) -> BookMetadata:
+    """Extract frontmatter-shaped metadata from a book file.
+
+    See `docs/superpowers/specs/2026-05-13-extract-metadata-design.md` §3.
+    """
+    fmt = detect_format(path)
+    if fmt not in _EXTRACTORS:
+        raise ValueError(f"no metadata extractor registered for format: {fmt}")
+    return _EXTRACTORS[fmt].extract_metadata(path, pages=pages)
