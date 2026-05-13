@@ -16,6 +16,7 @@ from book_ingestion.metadata import (
     BookMetadata,
     Creator,
     CreatorRole,
+    EditionHint,
     ErrorCode,
     Identifier,
     IdentifierCandidate,
@@ -478,19 +479,17 @@ class PdfMetadataExtractor:
         # Real copyright pages often name the edition ("Second Paperback Edition")
         # several lines above the ISBN lines, beyond the ±20-char window.
         if edition is not None and identifier.candidates:
-            from book_ingestion.metadata import EditionHint as _EH
             all_unspecified = all(
-                c.edition_hint == _EH.UNSPECIFIED for c in identifier.candidates
+                c.edition_hint == EditionHint.UNSPECIFIED for c in identifier.candidates
             )
             if all_unspecified:
                 fallback_hint = classify_edition_hint(edition)
-                if fallback_hint != _EH.UNSPECIFIED:
+                if fallback_hint != EditionHint.UNSPECIFIED:
                     new_candidates = [
                         c.model_copy(update={"edition_hint": fallback_hint})
                         for c in identifier.candidates
                     ]
-                    from book_ingestion.metadata import Identifier as _Id
-                    identifier = _Id(
+                    identifier = Identifier(
                         kind=identifier.kind,
                         value=identifier.value,
                         candidates=new_candidates,

@@ -383,7 +383,12 @@ class EpubMetadataExtractor:
             zf = zipfile.ZipFile(path)
         except (zipfile.BadZipFile, OSError) as exc:
             logger.warning("EPUB %s is not a valid zip: %s", path, exc)
-            return BookMetadata(error=ErrorCode.MALFORMED_EPUB)
+            return BookMetadata(
+                error=ErrorCode.MALFORMED_EPUB,
+                warnings=[MetadataWarning(
+                    code=WarningCode.INCOMPLETE_EXTRACTION, detail=str(exc),
+                )],
+            )
 
         try:
             with zf:

@@ -15,6 +15,7 @@ from book_ingestion.metadata import (
 from tests.fixtures.epub import (
     build_epub,
     build_epub_with_drm,
+    build_epub_with_split_title_page,
     build_epub_with_truncated_title,
     build_malformed_epub,
 )
@@ -70,6 +71,7 @@ def test_epub_not_a_zip_returns_error(tmp_path: Path) -> None:
     p.write_bytes(b"this is not a zip file")
     m = EpubMetadataExtractor().extract_metadata(p)
     assert m.error == ErrorCode.MALFORMED_EPUB
+    assert WarningCode.INCOMPLETE_EXTRACTION in {w.code for w in m.warnings}
 
 
 def test_epub_extracts_dc_title(tmp_path: Path) -> None:
@@ -314,3 +316,19 @@ def test_epub_title_page_no_fallback_when_dc_title_complete(tmp_path: Path) -> N
     # What matters: no SUBTITLE_NOT_IN_OPF warning.
     codes = {w.code for w in m.warnings}
     assert WarningCode.SUBTITLE_NOT_IN_OPF not in codes
+
+
+def test_epub_title_page_synthesises_subtitle_from_h1_h2(tmp_path: Path) -> None:
+    """h1+h2 synthesis: h1 matches dc:title, h2 holds an ALL-CAPS subtitle."""
+    p = build_epub_with_split_title_page(
+        tmp_path / "split.epub",
+        dc_title="Gaza",
+        h1_text="Gaza",
+        h2_text="AN INQUEST INTO ITS MARTYRDOM",
+    )
+    m = EpubMetadataExtractor().extract_metadata(p)
+    assert m.title == "Gaza"
+    assert m.subtitle == "An Inquest Into Its Martyrdom"
+    assert m.full_title == "Gaza: An Inquest Into Its Martyrdom"
+    codes = {w.code for w in m.warnings}
+    assert WarningCode.SUBTITLE_NOT_IN_OPF in codes

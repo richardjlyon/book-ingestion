@@ -11,6 +11,7 @@ from tests.fixtures.pdf import (
     build_encrypted_pdf,
     build_pdf_with_all_caps_title,
     build_pdf_with_imprint,
+    build_pdf_with_info_and_all_caps,
     build_scanned_pdf,
 )
 
@@ -322,3 +323,117 @@ def test_pdf_single_year_first_published_none(tmp_path: Path) -> None:
     m = PdfMetadataExtractor().extract_metadata(p)
     assert m.date == "2003"
     assert m.first_published is None
+
+
+def test_pdf_malformed_returns_error_with_warning(tmp_path: Path) -> None:
+    """A non-PDF file ending in .pdf yields MALFORMED_PDF + INCOMPLETE_EXTRACTION."""
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+    from book_ingestion.metadata import ErrorCode, WarningCode
+
+    p = tmp_path / "notpdf.pdf"
+    p.write_bytes(b"this is not a PDF file at all")
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert m.error == ErrorCode.MALFORMED_PDF
+    assert WarningCode.INCOMPLETE_EXTRACTION in {w.code for w in m.warnings}
+
+
+# ---------------------------------------------------------------------------
+# Task 21 heuristic regression tests (synthetic fixtures)
+# ---------------------------------------------------------------------------
+
+
+def test_pdf_prefers_all_caps_over_info_title_when_same_words(tmp_path: Path) -> None:
+    """ALL-CAPS text-mined title wins over mixed-case /Info /Title when words match."""
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+    from book_ingestion.metadata import WarningCode
+
+    p = build_pdf_with_info_and_all_caps(
+        tmp_path / "caps_vs_info.pdf",
+        info_title="The Sample Title",
+        title_lines=["THE SAMPLE TITLE"],
+    )
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert m.title == "THE SAMPLE TITLE"
+    assert WarningCode.TITLE_ALL_CAPS_IN_SOURCE in {w.code for w in m.warnings}
+
+
+def test_pdf_imprint_scope_excludes_pages_beyond_2(tmp_path: Path) -> None:
+    """Place names on page 4 are outside the 2-page imprint scope and are ignored."""
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+
+    p = tmp_path / "scope.pdf"
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.pdfgen import canvas as _canvas
+
+    c = _canvas.Canvas(str(p), pagesize=LETTER)
+    # Page 1: title page
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(72, 700, "TITLE")
+    c.showPage()
+    # Page 2: imprint (no place names)
+    c.setFont("Helvetica", 10)
+    c.drawString(72, 720, "Copyright © 2020")
+    c.showPage()
+    # Page 3: back matter (no place names)
+    c.setFont("Helvetica", 10)
+    c.drawString(72, 720, "Acknowledgements")
+    c.showPage()
+    # Page 4: body paragraph mentioning a city — must NOT be picked up
+    c.setFont("Helvetica", 10)
+    c.drawString(72, 720, "The conference was held in Chicago in 1995.")
+    c.save()
+
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert m.places == []
+
+
+def test_pdf_publisher_prefers_shortest_matching_line(tmp_path: Path) -> None:
+    """Publisher extraction picks the shortest line containing an imprint keyword."""
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+
+    p = tmp_path / "pub_short.pdf"
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.pdfgen import canvas as _canvas
+
+    c = _canvas.Canvas(str(p), pagesize=LETTER)
+    # Page 1: title
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(72, 700, "TITLE")
+    c.showPage()
+    # Page 2: imprint with two lines — long description and standalone name
+    c.setFont("Helvetica", 10)
+    c.drawString(72, 720, "First published by Verso Books in the United Kingdom")
+    c.drawString(72, 706, "Verso")
+    c.save()
+
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert m.publisher == "Verso"
+
+
+def test_pdf_edition_hint_fallback_from_edition_phrase(tmp_path: Path) -> None:
+    """Edition-hint is hoisted from the edition phrase when ISBN lines lack a window hint."""
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+    from book_ingestion.metadata import EditionHint
+
+    p = tmp_path / "edition_hint.pdf"
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.pdfgen import canvas as _canvas
+
+    c = _canvas.Canvas(str(p), pagesize=LETTER)
+    # Page 1: title
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(72, 700, "TITLE")
+    c.showPage()
+    # Page 2: imprint — edition phrase + bare ISBNs (no per-line hint keywords)
+    c.setFont("Helvetica", 10)
+    c.drawString(72, 720, "Second Paperback Edition")
+    c.drawString(72, 706, "Copyright © 2003")
+    c.drawString(72, 692, "ISBN 9781234567897")
+    c.save()
+
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert len(m.identifier.candidates) >= 1
+    assert all(
+        cand.edition_hint == EditionHint.PAPERBACK
+        for cand in m.identifier.candidates
+    )

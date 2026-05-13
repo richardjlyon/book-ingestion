@@ -368,8 +368,9 @@ When `dc:title` is short and unlikely to include a subtitle (Gaza case: `<dc:tit
 
 1. Find the title-page xhtml:
    - First: OPF `<guide type="title-page">` `href`.
-   - Else: OPF `<guide type="cover">` `href`.
    - Else: scan ZIP entries for `*itle*.xhtml` or `titlepage.xhtml` at OEBPS root.
+   - Note: `<guide type="cover">` is deliberately skipped — cover pages typically
+     link to image-only xhtml that yields no usable subtitle text.
 2. Parse with `xml.etree.ElementTree`; collect `h1`, `h2`, `title` element text.
 3. Longest non-empty string is the candidate full-title.
 4. If candidate contains `dc:title` as a prefix followed by `:`, `—`, or newline → split: prefix → `title`, remainder → `subtitle`. Flag `SUBTITLE_NOT_IN_OPF`.

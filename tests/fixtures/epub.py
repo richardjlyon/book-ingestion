@@ -127,6 +127,47 @@ def build_epub_with_truncated_title(
     return path
 
 
+def build_epub_with_split_title_page(
+    path: Path,
+    *,
+    dc_title: str,
+    h1_text: str,
+    h2_text: str,
+) -> Path:
+    """Build an EPUB whose title-page xhtml has separate h1 (title) and h2 (subtitle).
+
+    dc:title is bare (no subtitle); the full title is synthesised from h1+h2 by
+    _parse_title_page_text when the h1 matches dc:title.
+    """
+    metadata_lines = [
+        f'<dc:title>{dc_title}</dc:title>',
+        '<dc:language>en</dc:language>',
+    ]
+    opf = _OPF_TEMPLATE.format(
+        metadata_inner="\n    ".join(metadata_lines),
+        manifest_inner='<item id="t" href="title.xhtml" media-type="application/xhtml+xml"/>',
+        spine_inner='<itemref idref="t"/>',
+        guide_block='<guide><reference type="title-page" href="title.xhtml" title="Title"/></guide>',
+    )
+    title_page = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<html xmlns="http://www.w3.org/1999/xhtml">'
+        f'<head><title>{dc_title}</title></head>'
+        f'<body><h1>{h1_text}</h1><h2>{h2_text}</h2></body>'
+        '</html>'
+    )
+    _write_zip(
+        path,
+        {
+            "mimetype": "application/epub+zip",
+            "META-INF/container.xml": _CONTAINER_XML.format(opf_path="OEBPS/content.opf"),
+            "OEBPS/content.opf": opf,
+            "OEBPS/title.xhtml": title_page,
+        },
+    )
+    return path
+
+
 def build_epub_with_drm(path: Path) -> Path:
     """Build an EPUB with Adobe DRM markers in META-INF/encryption.xml."""
     _write_zip(

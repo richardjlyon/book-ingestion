@@ -90,6 +90,28 @@ def build_pdf_with_all_caps_title(
     return path
 
 
+def build_pdf_with_info_and_all_caps(
+    path: Path,
+    *,
+    info_title: str,
+    title_lines: list[str],
+) -> Path:
+    """Build a PDF whose /Info /Title is set but page 1 has ALL-CAPS text as the largest run.
+
+    Used to verify that the text-mined ALL-CAPS title wins over /Info when the
+    words are the same (case-insensitive).
+    """
+    c = canvas.Canvas(str(path), pagesize=LETTER)
+    c.setTitle(info_title)
+    c.setFont("Helvetica-Bold", 24)
+    y = 700
+    for line in title_lines:
+        c.drawString(72, y, line)
+        y -= 30
+    c.save()
+    return path
+
+
 def build_encrypted_pdf(path: Path, *, password: str) -> Path:
     """Build a password-protected PDF."""
     c = canvas.Canvas(str(path), pagesize=LETTER, encrypt=password)
