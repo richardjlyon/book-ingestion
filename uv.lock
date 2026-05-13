@@ -152,7 +152,6 @@ name = "book-ingestion"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "docling" },
     { name = "pydantic" },
     { name = "pypdf" },
     { name = "typer" },
@@ -160,6 +159,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "docling" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "reportlab" },
@@ -169,11 +169,15 @@ dev = [
 llm = [
     { name = "anthropic" },
 ]
+pdf-ir = [
+    { name = "docling" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "anthropic", marker = "extra == 'llm'", specifier = ">=0.101" },
-    { name = "docling", specifier = ">=2.93" },
+    { name = "docling", marker = "extra == 'dev'", specifier = ">=2.93" },
+    { name = "docling", marker = "extra == 'pdf-ir'", specifier = ">=2.93" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.1" },
     { name = "pydantic", specifier = ">=2.13" },
     { name = "pypdf", specifier = ">=5.0" },
@@ -183,7 +187,7 @@ requires-dist = [
     { name = "syrupy", marker = "extra == 'dev'", specifier = ">=5.1" },
     { name = "typer", specifier = ">=0.12.5,<0.22.0" },
 ]
-provides-extras = ["llm", "dev"]
+provides-extras = ["pdf-ir", "llm", "dev"]
 
 [[package]]
 name = "certifi"

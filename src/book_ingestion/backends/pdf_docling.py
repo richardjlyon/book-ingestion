@@ -59,7 +59,17 @@ class PdfDoclingBackend:
 
     def _run_docling(self, path: Path, *, ctx: Context) -> dict[str, Any]:
         """Run Docling on the file and persist its serialized output."""
-        from docling.document_converter import DocumentConverter
+        try:
+            from docling.document_converter import DocumentConverter
+        except ImportError as e:
+            raise ImportError(
+                "book_ingestion's PDF survey/extract_chapter requires Docling. "
+                "Install with one of:\n"
+                "  pipx install --force '<path-to-wheel>[pdf-ir]'   # if installed via pipx\n"
+                "  uv sync --extra pdf-ir                            # in this repo's dev env\n"
+                "The metadata-only path (extract_metadata / `book-ingest metadata`) "
+                "does NOT require Docling and is unaffected."
+            ) from e
 
         converter = DocumentConverter()
         logger.info("running docling on %s", path)

@@ -7,13 +7,13 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Richard Lyon" }]
 dependencies = [
-    "docling>=2.93",
     "pydantic>=2.13",
     "pypdf>=5.0",
     "typer>=0.12.5,<0.22.0",  # constrained by docling-slim[standard]==2.93.0
 ]
 
 [project.optional-dependencies]
+pdf-ir = ["docling>=2.93"]
 llm = ["anthropic>=0.101"]
 dev = [
     "pytest>=9.0",
@@ -21,6 +21,7 @@ dev = [
     "ruff>=0.15",
     "mypy>=2.1",
     "reportlab>=4.5",
+    "docling>=2.93",
 ]
 
 [project.scripts]
