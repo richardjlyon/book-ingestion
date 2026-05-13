@@ -264,6 +264,54 @@ def _extract_dates_from_opf(meta_elem: ET.Element) -> tuple[str | None, str | No
     return None, original
 
 
+def _find_title_page_href(opf_root: ET.Element, names: set[str]) -> str | None:
+    """Return the EPUB-internal href of the title-page xhtml, or None."""
+    # <guide type="title-page" href="..."/>
+    for ref in opf_root.iter(f"{{{_OPF_NS}}}reference"):
+        if (ref.get("type") or "").lower() == "title-page":
+            return ref.get("href")
+    for ref in opf_root.iter(f"{{{_OPF_NS}}}reference"):
+        if (ref.get("type") or "").lower() == "cover":
+            return ref.get("href")
+    # Fallback: scan names for *itle*.xhtml or titlepage.xhtml
+    for name in names:
+        lowered = name.lower()
+        if lowered.endswith(".xhtml") and ("titlepage" in lowered or "title" in lowered):
+            return name
+    return None
+
+
+def _parse_title_page_text(xhtml_bytes: bytes) -> str | None:
+    """Return the longest non-empty text in h1/h2/title from a title-page xhtml."""
+    try:
+        root = ET.fromstring(xhtml_bytes)
+    except ET.ParseError:
+        return None
+    candidates: list[str] = []
+    for tag in ("{http://www.w3.org/1999/xhtml}h1",
+                "{http://www.w3.org/1999/xhtml}h2",
+                "{http://www.w3.org/1999/xhtml}title"):
+        for elem in root.iter(tag):
+            text = "".join(elem.itertext()).strip()
+            if text:
+                candidates.append(text)
+    if not candidates:
+        return None
+    return max(candidates, key=len)
+
+
+def _split_subtitle(dc_title: str, full_candidate: str) -> tuple[str, str | None]:
+    """If full_candidate contains dc_title as prefix + ':' or '—', split."""
+    if not full_candidate.startswith(dc_title):
+        return dc_title, None
+    rest = full_candidate[len(dc_title):].lstrip()
+    if rest and rest[0] in (":", "—", "-"):
+        sub = rest[1:].strip()
+        if sub:
+            return dc_title, sub
+    return dc_title, None
+
+
 class EpubMetadataExtractor:
     """EPUB metadata extractor.
 
@@ -354,10 +402,37 @@ class EpubMetadataExtractor:
                 # Extract dates
                 date, first_published = _extract_dates_from_opf(meta_elem)
 
+                # Title-page xhtml fallback for subtitle
+                subtitle: str | None = None
+                if title is not None and ":" not in title and "—" not in title:
+                    href = _find_title_page_href(opf_root, names)
+                    if href is not None:
+                        # Resolve href relative to the OPF file's directory
+                        opf_dir = opf_path.rsplit("/", 1)[0] if "/" in opf_path else ""
+                        candidate_path = f"{opf_dir}/{href}" if opf_dir else href
+                        if candidate_path in names:
+                            try:
+                                xhtml_bytes = zf.read(candidate_path)
+                                full_candidate = _parse_title_page_text(xhtml_bytes)
+                            except KeyError:
+                                full_candidate = None
+                            if full_candidate is not None and full_candidate != title:
+                                t2, sub = _split_subtitle(title, full_candidate)
+                                if sub is not None:
+                                    title = t2
+                                    subtitle = sub
+                                    warnings.append(MetadataWarning(
+                                        code=WarningCode.SUBTITLE_NOT_IN_OPF,
+                                        detail=f"subtitle from title-page xhtml: {sub}",
+                                    ))
+
+                full_title = (f"{title}: {subtitle}" if subtitle else title) if title else None
+
                 return BookMetadata(
                     identifier=identifier,
                     title=title,
-                    full_title=title,
+                    subtitle=subtitle,
+                    full_title=full_title,
                     publisher=publisher,
                     language=language,
                     creators=creators,

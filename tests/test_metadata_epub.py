@@ -285,3 +285,32 @@ def test_epub_date_from_rights_year_when_no_dc_date(tmp_path: Path) -> None:
 
     m = EpubMetadataExtractor().extract_metadata(p)
     assert m.date == "2018"
+
+
+def test_epub_title_page_fallback_supplies_subtitle(tmp_path: Path) -> None:
+    p = build_epub_with_truncated_title(
+        tmp_path / "fallback.epub",
+        dc_title="Gaza",
+        full_title_in_xhtml="Gaza: An Inquest Into Its Martyrdom",
+    )
+    m = EpubMetadataExtractor().extract_metadata(p)
+    assert m.title == "Gaza"
+    assert m.subtitle == "An Inquest Into Its Martyrdom"
+    assert m.full_title == "Gaza: An Inquest Into Its Martyrdom"
+    codes = {w.code for w in m.warnings}
+    assert WarningCode.SUBTITLE_NOT_IN_OPF in codes
+
+
+def test_epub_title_page_no_fallback_when_dc_title_complete(tmp_path: Path) -> None:
+    """If dc:title already contains a colon-delimited subtitle, don't fall back."""
+    p = build_epub(
+        tmp_path / "complete.epub",
+        dc_title="Gaza: An Inquest Into Its Martyrdom",
+        creators=[], isbn=None, publisher=None, language="en",
+    )
+    m = EpubMetadataExtractor().extract_metadata(p)
+    # The extractor may parse "Gaza: An Inquest..." as title; subtitle handling
+    # at the dc:title level is out of scope for M2.0 (just title=full string).
+    # What matters: no SUBTITLE_NOT_IN_OPF warning.
+    codes = {w.code for w in m.warnings}
+    assert WarningCode.SUBTITLE_NOT_IN_OPF not in codes
