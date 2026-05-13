@@ -30,7 +30,7 @@ def test_cli_survey_emits_valid_json(synthetic_pdf: Path, tmp_cache_dir: Path) -
     # logs to stderr which would otherwise pollute result.output. Parse stdout.
     payload = json.loads(result.stdout)
     assert payload["kind"] == "book_survey"
-    assert payload["schema_version"] == "1.0"
+    assert payload["schema_version"] == "1.1"
 
 
 def test_cli_missing_file_exits_one(tmp_cache_dir: Path) -> None:
