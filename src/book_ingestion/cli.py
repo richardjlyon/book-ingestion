@@ -16,7 +16,7 @@ from typing import Any
 
 import typer
 
-from book_ingestion import extract_chapter, survey
+from book_ingestion import extract_chapter, extract_metadata, survey
 from book_ingestion.cache import Cache, default_cache_root
 from book_ingestion.detect import detect_format
 from book_ingestion.ir import BookSurvey, ChapterContent
@@ -135,6 +135,39 @@ def cmd_extract(
         raise typer.Exit(1) from e
     _print_json(c.model_dump(mode="json"))
     raise typer.Exit(2 if _refused(c) else 0)
+
+
+@app.command("metadata")
+def cmd_metadata(
+    path: Path = typer.Argument(..., exists=False),
+    pages: int = typer.Option(6, "--pages", help="Number of front-matter pages to inspect."),
+    quiet: bool = typer.Option(False, "--quiet"),
+    verbose: bool = typer.Option(False, "--verbose"),
+) -> None:
+    """Extract frontmatter-shaped metadata from a book file.
+
+    JSON is emitted to stdout. Exit codes:
+      0 — clean extraction
+      2 — extraction refused (m.error is set; JSON still emitted)
+      1 — hard error (file not found, unsupported format, unexpected failure)
+    """
+    _configure_logging(quiet, verbose)
+    try:
+        if not path.exists():
+            _err(f"file not found: {path}", kind="not_found")
+            raise typer.Exit(1)
+        detect_format(path)  # rejects unsupported formats early with ValueError
+        m = extract_metadata(path, pages=pages)
+    except typer.Exit:
+        raise
+    except ValueError as e:
+        _err(str(e), kind="value_error")
+        raise typer.Exit(1) from e
+    except Exception as e:  # boundary handler — surfaces any backend failure as exit 1
+        _err(str(e), kind=type(e).__name__)
+        raise typer.Exit(1) from e
+    _print_json(m.model_dump(mode="json"))
+    raise typer.Exit(2 if m.error is not None else 0)
 
 
 @cache_app.command("list")

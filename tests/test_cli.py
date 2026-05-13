@@ -46,3 +46,26 @@ def test_cli_json_schema_subcommand_emits_schema() -> None:
     schema = json.loads(result.output)
     assert "properties" in schema
     assert schema["properties"]["kind"]["const"] == "book_survey"
+
+
+def test_cli_metadata_emits_valid_json(synthetic_pdf: Path) -> None:
+    result = runner.invoke(app, ["metadata", str(synthetic_pdf)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "book_metadata"
+    assert payload["schema_version"] == "1.1"
+
+
+def test_cli_metadata_exit_2_on_extraction_refused(tmp_path: Path) -> None:
+    from tests.fixtures.pdf import build_encrypted_pdf
+
+    p = build_encrypted_pdf(tmp_path / "locked.pdf", password="secret")
+    result = runner.invoke(app, ["metadata", str(p)])
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.stdout)
+    assert payload["error"] is not None
+
+
+def test_cli_metadata_missing_file_exits_one() -> None:
+    result = runner.invoke(app, ["metadata", "/no/such/file.pdf"])
+    assert result.exit_code == 1

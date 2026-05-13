@@ -8,7 +8,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from book_ingestion.backends.base import Backend, Context
-from book_ingestion.backends.pdf_docling import PdfDoclingBackend
 from book_ingestion.cache import Cache
 from book_ingestion.detect import detect_format
 from book_ingestion.extractors.base import MetadataExtractor
@@ -17,23 +16,24 @@ from book_ingestion.extractors.pdf import PdfMetadataExtractor
 from book_ingestion.ir import BookSurvey, ChapterContent
 from book_ingestion.metadata import BookMetadata
 
-_BACKENDS: dict[str, Backend] = {
-    "pdf": PdfDoclingBackend(),
-    # "epub": EpubBackend(),     # M2
-    # "pdf_ocr": OcrBackend(),   # M3
-}
-
+# Extractors are lightweight — eager construction is fine.
 _EXTRACTORS: dict[str, MetadataExtractor] = {
     "pdf": PdfMetadataExtractor(),
     "epub": EpubMetadataExtractor(),
 }
 
+# Backends are heavy (Docling) — lazy-initialise on first use.
+_BACKENDS: dict[str, Backend] = {}
+
 
 def _backend_for(path: Path) -> Backend:
     fmt = detect_format(path)
-    if fmt not in _BACKENDS:
-        raise ValueError(f"no backend registered for format: {fmt}")
-    return _BACKENDS[fmt]
+    if fmt == "pdf":
+        if "pdf" not in _BACKENDS:
+            from book_ingestion.backends.pdf_docling import PdfDoclingBackend
+            _BACKENDS["pdf"] = PdfDoclingBackend()
+        return _BACKENDS["pdf"]
+    raise ValueError(f"no backend registered for format: {fmt}")
 
 
 def survey(
