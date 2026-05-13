@@ -6,6 +6,7 @@ shape and contract.
 """
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Literal
 
@@ -109,3 +110,93 @@ class BookMetadata(BaseModel):
     # Diagnostics
     error: ErrorCode | None = None
     warnings: list[MetadataWarning] = Field(default_factory=list)
+
+
+# --- ISBN helpers -----------------------------------------------------------
+
+_ISBN_SEPARATOR_RE = re.compile(r"[-\s]")
+
+
+def canonicalize_isbn(raw: str) -> str:
+    """Strip separators from an ISBN string, leaving digits (and optional final 'X')."""
+    return _ISBN_SEPARATOR_RE.sub("", raw).upper()
+
+
+def isbn10_to_isbn13(isbn10: str) -> str:
+    """Convert a canonicalized 10-digit ISBN to its 13-digit form (978-prefixed).
+
+    Raises ValueError when the input is not a 10-character ISBN-10.
+    """
+    if len(isbn10) != 10:
+        raise ValueError(f"not an ISBN-10 (length {len(isbn10)}): {isbn10!r}")
+    body = "978" + isbn10[:9]
+    # ISBN-13 check digit: weighted sum (1,3,1,3,...) over the 12 leading digits,
+    # then (10 - sum mod 10) mod 10.
+    weights = [1, 3] * 6
+    total = sum(int(d) * w for d, w in zip(body, weights, strict=True))
+    check = (10 - (total % 10)) % 10
+    return body + str(check)
+
+
+def dedupe_isbn_candidates(
+    candidates: list[IdentifierCandidate],
+) -> list[IdentifierCandidate]:
+    """Collapse ISBN-10 / ISBN-13 same-edition pairs.
+
+    For each non-ISBN candidate: pass through. For each ISBN candidate:
+    canonicalize to ISBN-13. If two candidates resolve to the same ISBN-13,
+    keep the one whose value is already in ISBN-13 form. On edition-hint
+    conflict, prefer the non-UNSPECIFIED hint; if both are specified and
+    differ, prefer the ISBN-13 form's hint.
+    """
+    by_key: dict[str, tuple[IdentifierKind, IdentifierCandidate]] = {}
+    for cand in candidates:
+        if cand.kind != IdentifierKind.ISBN:
+            key = f"{cand.kind}:{cand.value}"
+            if key not in by_key:
+                by_key[key] = (cand.kind, cand)
+            continue
+
+        # ISBN: compute ISBN-13 key
+        canon = cand.value
+        try:
+            key_val = canon if len(canon) == 13 else isbn10_to_isbn13(canon)
+        except ValueError:
+            # Malformed ISBN — keep as-is, don't merge.
+            key = f"{IdentifierKind.ISBN}:{canon}"
+            by_key[key] = (IdentifierKind.ISBN, cand)
+            continue
+
+        key = f"{IdentifierKind.ISBN}:{key_val}"
+        existing = by_key.get(key)
+        if existing is None:
+            # Promote to ISBN-13 form if we're an ISBN-10
+            if len(canon) == 10:
+                by_key[key] = (IdentifierKind.ISBN, cand.model_copy(update={"value": key_val}))
+            else:
+                by_key[key] = (IdentifierKind.ISBN, cand)
+            continue
+
+        # Merge: ISBN-13 form wins on value; edition hint preference rules.
+        winner_value = key_val  # always ISBN-13 in dedupe output
+        # hint preference:
+        existing_hint = existing[1].edition_hint
+        new_hint = cand.edition_hint
+        if existing_hint == EditionHint.UNSPECIFIED and new_hint != EditionHint.UNSPECIFIED:
+            chosen_hint: EditionHint = new_hint
+        elif new_hint == EditionHint.UNSPECIFIED and existing_hint != EditionHint.UNSPECIFIED:
+            chosen_hint = existing_hint
+        elif len(cand.value) == 13:
+            chosen_hint = new_hint
+        else:
+            chosen_hint = existing_hint
+        by_key[key] = (
+            IdentifierKind.ISBN,
+            IdentifierCandidate(
+                kind=IdentifierKind.ISBN,
+                value=winner_value,
+                edition_hint=chosen_hint,
+            ),
+        )
+
+    return [v[1] for v in by_key.values()]
