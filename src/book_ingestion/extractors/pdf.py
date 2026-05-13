@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from book_ingestion.metadata import (
     BookMetadata,
@@ -24,6 +25,9 @@ from book_ingestion.metadata import (
     dedupe_isbn_candidates,
     pick_identifier_value,
 )
+
+if TYPE_CHECKING:
+    from pypdf import PdfReader
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +105,102 @@ def _extract_identifier(text: str, warnings: list[MetadataWarning]) -> Identifie
     )
 
 
+def _info_title(reader: PdfReader, path: Path) -> str | None:
+    """Return /Info /Title if present, non-empty, and not equal to path.stem."""
+    info = reader.metadata
+    if info is None:
+        return None
+    raw = info.get("/Title")
+    if not raw:
+        return None
+    text = str(raw).strip()
+    if not text or text == path.stem or text.lower() == "untitled":
+        return None
+    return text
+
+
+def _is_all_caps(line: str) -> bool:
+    has_letter = any(c.isalpha() for c in line)
+    return has_letter and line.upper() == line
+
+
+def _mine_title_from_page_one(text_page_one: str) -> tuple[str | None, str | None]:
+    """Return (title, subtitle) from page-1 text mining.
+
+    Strategy (spec §5.3):
+      - Find first ALL-CAPS block (consecutive ALL-CAPS lines without trailing punct).
+        Join with single spaces. Subtitle = next ALL-CAPS block before author signal.
+      - Else, first non-trivial line (≥5 chars, not a page number).
+        Subtitle = next non-empty line if shorter than title.
+    """
+    lines = [line.strip() for line in text_page_one.splitlines() if line.strip()]
+    if not lines:
+        return None, None
+
+    # ALL-CAPS path: collect consecutive ALL-CAPS lines without trailing punct.
+    # Each run of consecutive ALL-CAPS lines forms a block; blocks are separated by
+    # non-ALL-CAPS lines, author signal, or when a line looks like a standalone subtitle
+    # (relatively long, all-caps line following another relatively long all-caps line).
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        if line.lower().startswith("by "):
+            break
+        if _is_all_caps(line):
+            # Check if this looks like a standalone subtitle:
+            # if current block has >= 1 line AND both current[-1] and this line are >= 15 chars
+            # and neither has trailing punct, then finalize current and start a new block.
+            should_break_before = (
+                current
+                and len(current[0]) >= 15
+                and len(line) >= 15
+                and not (current[-1] and current[-1][-1] in ".,:;!?")
+                and not (line and line[-1] in ".,:;!?")
+            )
+            if should_break_before:
+                blocks.append(current)
+                current = []
+            current.append(line)
+        else:
+            if current:
+                blocks.append(current)
+                current = []
+            # Continue scanning — later ALL-CAPS may be subtitle.
+    if current:
+        blocks.append(current)
+
+    if blocks:
+        title = " ".join(blocks[0])
+        subtitle = " ".join(blocks[1]) if len(blocks) > 1 else None
+        return title, subtitle
+
+    # First non-trivial line fallback
+    for line in lines:
+        if len(line) < 5:
+            continue
+        if line.isdigit():
+            continue
+        title = line
+        # Subtitle: next non-empty line shorter than title
+        idx = lines.index(line)
+        rest = lines[idx + 1 :]
+        for r in rest:
+            if r.lower().startswith("by "):
+                break
+            if 0 < len(r) < len(title):
+                return title, r
+        return title, None
+    return None, None
+
+
+def _compose_full_title(title: str | None, subtitle: str | None) -> str | None:
+    if title is None:
+        return None
+    if subtitle is None:
+        return title
+    return f"{title}: {subtitle}"
+
+
 class PdfMetadataExtractor:
     """PDF metadata extractor.
 
@@ -152,7 +252,22 @@ class PdfMetadataExtractor:
         warnings: list[MetadataWarning] = []
         identifier = _extract_identifier(joined, warnings)
 
+        info_title = _info_title(reader, path)
+        if info_title is not None:
+            title: str | None = info_title
+            subtitle: str | None = None  # /Info has no subtitle field
+        else:
+            title, subtitle = _mine_title_from_page_one(page_texts[0] if page_texts else "")
+
+        if title is not None and _is_all_caps(title):
+            warnings.append(MetadataWarning(code=WarningCode.TITLE_ALL_CAPS_IN_SOURCE))
+
+        full_title = _compose_full_title(title, subtitle)
+
         return BookMetadata(
             identifier=identifier,
+            title=title,
+            subtitle=subtitle,
+            full_title=full_title,
             warnings=warnings,
         )

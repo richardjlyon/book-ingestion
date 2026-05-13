@@ -145,3 +145,67 @@ def test_pdf_extracts_arxiv(tmp_path: Path) -> None:
     m = PdfMetadataExtractor().extract_metadata(p)
     assert m.identifier.kind == IdentifierKind.ARXIV
     assert m.identifier.value == "2301.12345"
+
+
+def test_pdf_uses_info_title_when_present(tmp_path: Path) -> None:
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+
+    p = build_pdf_with_imprint(
+        tmp_path / "info.pdf",
+        title="The Real Title",
+        subtitle="Subtitle Here",
+        isbn_paperback="9781234567897",
+        isbn_hardback="9781234567880",
+        publisher="X",
+        places=["L"],
+        year=2000,
+    )
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert m.title == "The Real Title"
+
+
+def test_pdf_falls_back_to_all_caps_when_info_blank(tmp_path: Path) -> None:
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+    from book_ingestion.metadata import WarningCode
+
+    p = build_pdf_with_all_caps_title(
+        tmp_path / "caps.pdf",
+        title_lines=["THE HOLOCAUST INDUSTRY"],
+        subtitle="REFLECTIONS ON THE EXPLOITATION",
+        author="Norman G. Finkelstein",
+    )
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert m.title == "THE HOLOCAUST INDUSTRY"
+    assert m.subtitle == "REFLECTIONS ON THE EXPLOITATION"
+    assert m.full_title == "THE HOLOCAUST INDUSTRY: REFLECTIONS ON THE EXPLOITATION"
+    codes = {w.code for w in m.warnings}
+    assert WarningCode.TITLE_ALL_CAPS_IN_SOURCE in codes
+
+
+def test_pdf_joins_multi_line_all_caps(tmp_path: Path) -> None:
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+
+    p = build_pdf_with_all_caps_title(
+        tmp_path / "multi.pdf",
+        title_lines=["THE HOLOCAUST", "INDUSTRY"],
+        subtitle=None,
+        author="Author",
+    )
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert m.title == "THE HOLOCAUST INDUSTRY"
+    assert m.subtitle is None
+    assert m.full_title == "THE HOLOCAUST INDUSTRY"
+
+
+def test_pdf_info_title_equal_to_stem_is_ignored(tmp_path: Path) -> None:
+    """When /Info /Title is just the filename, fall through to text mining."""
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+
+    p = tmp_path / "MyFile.pdf"
+    c = canvas.Canvas(str(p), pagesize=LETTER)
+    c.setTitle("MyFile")  # equal to path.stem
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(72, 700, "REAL TITLE")
+    c.save()
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert m.title == "REAL TITLE"
