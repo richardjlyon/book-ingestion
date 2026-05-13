@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from book_ingestion.extractors.epub import EpubMetadataExtractor
-from book_ingestion.metadata import BookMetadata, ErrorCode
+from book_ingestion.metadata import BookMetadata, ErrorCode, WarningCode
 from tests.fixtures.epub import (
     build_epub,
     build_epub_with_drm,
@@ -63,3 +63,60 @@ def test_epub_not_a_zip_returns_error(tmp_path: Path) -> None:
     p.write_bytes(b"this is not a zip file")
     m = EpubMetadataExtractor().extract_metadata(p)
     assert m.error == ErrorCode.MALFORMED_EPUB
+
+
+def test_epub_extracts_dc_title(tmp_path: Path) -> None:
+    p = build_epub(
+        tmp_path / "t.epub",
+        dc_title="Sample Book",
+        creators=[("Smith, Jane", "aut")],
+        isbn=None,
+        publisher=None,
+        language="en",
+    )
+    m = EpubMetadataExtractor().extract_metadata(p)
+    assert m.title == "Sample Book"
+    assert m.full_title == "Sample Book"
+
+
+def test_epub_extracts_publisher(tmp_path: Path) -> None:
+    p = build_epub(
+        tmp_path / "pub.epub",
+        dc_title="X",
+        creators=[],
+        isbn=None,
+        publisher="Example Press",
+        language="en",
+    )
+    m = EpubMetadataExtractor().extract_metadata(p)
+    assert m.publisher == "Example Press"
+
+
+def test_epub_normalises_language_and_flags(tmp_path: Path) -> None:
+    p = build_epub(
+        tmp_path / "lang.epub",
+        dc_title="X",
+        creators=[],
+        isbn=None,
+        publisher=None,
+        language="en-US",
+    )
+    m = EpubMetadataExtractor().extract_metadata(p)
+    assert m.language == "en"
+    codes = {w.code for w in m.warnings}
+    assert WarningCode.LANGUAGE_NORMALISED in codes
+
+
+def test_epub_language_no_normalisation_no_flag(tmp_path: Path) -> None:
+    p = build_epub(
+        tmp_path / "lang2.epub",
+        dc_title="X",
+        creators=[],
+        isbn=None,
+        publisher=None,
+        language="en",
+    )
+    m = EpubMetadataExtractor().extract_metadata(p)
+    assert m.language == "en"
+    codes = {w.code for w in m.warnings}
+    assert WarningCode.LANGUAGE_NORMALISED not in codes
