@@ -5,3 +5,44 @@ Returned by `book_ingestion.extract_metadata()`. See
 shape and contract.
 """
 from __future__ import annotations
+
+from enum import StrEnum
+
+
+class IdentifierKind(StrEnum):
+    ISBN = "isbn"
+    DOI = "doi"
+    ARXIV = "arxiv"
+
+
+class EditionHint(StrEnum):
+    PAPERBACK = "paperback"
+    HARDBACK = "hardback"
+    EBOOK = "ebook"
+    UNSPECIFIED = "unspecified"
+
+
+class CreatorRole(StrEnum):
+    AUTHOR = "author"
+    EDITOR = "editor"
+    TRANSLATOR = "translator"
+    FOREWORD = "foreword"
+    ILLUSTRATOR = "illustrator"
+
+
+class ErrorCode(StrEnum):
+    ENCRYPTED = "encrypted"
+    DRM_PROTECTED = "drm_protected"
+    MALFORMED_PDF = "malformed_pdf"
+    MALFORMED_EPUB = "malformed_epub"
+
+
+class WarningCode(StrEnum):
+    TITLE_ALL_CAPS_IN_SOURCE = "title_all_caps_in_source"
+    SUBTITLE_NOT_IN_OPF = "subtitle_not_in_opf"
+    MULTIPLE_ISBNS_DETECTED = "multiple_isbns_detected"
+    DC_CREATOR_TRAILING_PUNCTUATION = "dc_creator_trailing_punctuation"
+    LANGUAGE_NORMALISED = "language_normalised"
+    NO_TEXT_EXTRACTED = "no_text_extracted"
+    INCOMPLETE_EXTRACTION = "incomplete_extraction"
+    MULTIPLE_PLACES_DETECTED = "multiple_places_detected"
