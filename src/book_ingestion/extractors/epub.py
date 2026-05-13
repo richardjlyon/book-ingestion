@@ -265,36 +265,91 @@ def _extract_dates_from_opf(meta_elem: ET.Element) -> tuple[str | None, str | No
 
 
 def _find_title_page_href(opf_root: ET.Element, names: set[str]) -> str | None:
-    """Return the EPUB-internal href of the title-page xhtml, or None."""
+    """Return the EPUB-internal href of the title-page xhtml, or None.
+
+    Checks the OPF <guide> for type='title-page' first, then falls back
+    to scanning the zip's member names for any xhtml file with 'title'
+    or 'titlepage' in its basename. The cover-page guide entry is skipped
+    because cover pages often lack the subtitle.
+
+    The returned value may be:
+    - a relative href from the guide (e.g. 'title.xhtml')
+    - a full zip-member path from the name scan (e.g. 'OEBPS/Title.xhtml')
+
+    Callers should resolve against opf_dir, handling both forms.
+    """
     # <guide type="title-page" href="..."/>
     for ref in opf_root.iter(f"{{{_OPF_NS}}}reference"):
         if (ref.get("type") or "").lower() == "title-page":
             return ref.get("href")
-    for ref in opf_root.iter(f"{{{_OPF_NS}}}reference"):
-        if (ref.get("type") or "").lower() == "cover":
-            return ref.get("href")
-    # Fallback: scan names for *itle*.xhtml or titlepage.xhtml
+    # Fallback: scan zip names for *itle*.xhtml or titlepage.xhtml.
+    # (Cover-page guide entries are intentionally skipped — they resolve to
+    # cover images, not the title/subtitle page.)
+    # Rank: exact 'title.xhtml' or 'titlepage.xhtml' basenames first, then
+    # any xhtml whose basename contains 'title'.  Sorting by rank then by
+    # name gives deterministic results across Python set-iteration orders.
+    _RANK_EXACT = 0
+    _RANK_CONTAINS = 1
+    ranked: list[tuple[int, str]] = []
     for name in names:
         lowered = name.lower()
-        if lowered.endswith(".xhtml") and ("titlepage" in lowered or "title" in lowered):
-            return name
+        basename = lowered.rsplit("/", 1)[-1]
+        if not basename.endswith(".xhtml"):
+            continue
+        stem = basename[: -len(".xhtml")]
+        if stem in ("title", "titlepage"):
+            ranked.append((_RANK_EXACT, name))
+        elif "titlepage" in basename or "title" in basename:
+            ranked.append((_RANK_CONTAINS, name))
+    if ranked:
+        ranked.sort()
+        return ranked[0][1]
     return None
 
 
-def _parse_title_page_text(xhtml_bytes: bytes) -> str | None:
-    """Return the longest non-empty text in h1/h2/title from a title-page xhtml."""
+def _normalize_all_caps(text: str) -> str:
+    """Title-case a string that is entirely upper-case; leave mixed-case unchanged."""
+    return text.title() if text.isupper() else text
+
+
+def _parse_title_page_text(xhtml_bytes: bytes, dc_title: str | None = None) -> str | None:
+    """Return a subtitle-splittable string from a title-page xhtml.
+
+    Strategy:
+    1. If h1 matches *dc_title* (case-insensitive) and h2 is also present,
+       synthesize ``"<h1>: <h2>"`` (normalising ALL-CAPS h2 to title case).
+       This handles EPUBs that place title in <h1> and subtitle in <h2>.
+    2. Otherwise return the longest non-empty text found in h1 / h2 / <title>.
+    """
     try:
         root = ET.fromstring(xhtml_bytes)
     except ET.ParseError:
         return None
-    candidates: list[str] = []
-    for tag in ("{http://www.w3.org/1999/xhtml}h1",
-                "{http://www.w3.org/1999/xhtml}h2",
-                "{http://www.w3.org/1999/xhtml}title"):
-        for elem in root.iter(tag):
-            text = "".join(elem.itertext()).strip()
-            if text:
-                candidates.append(text)
+    h1_texts: list[str] = []
+    h2_texts: list[str] = []
+    title_texts: list[str] = []
+    for elem in root.iter("{http://www.w3.org/1999/xhtml}h1"):
+        text = "".join(elem.itertext()).strip()
+        if text:
+            h1_texts.append(text)
+    for elem in root.iter("{http://www.w3.org/1999/xhtml}h2"):
+        text = "".join(elem.itertext()).strip()
+        if text:
+            h2_texts.append(text)
+    for elem in root.iter("{http://www.w3.org/1999/xhtml}title"):
+        text = "".join(elem.itertext()).strip()
+        if text:
+            title_texts.append(text)
+
+    # h1 + h2 synthesis: when h1 matches dc_title and h2 holds a subtitle
+    if dc_title and h1_texts and h2_texts:
+        for h1_text in h1_texts:
+            if h1_text.lower() == dc_title.lower():
+                h2_text = _normalize_all_caps(h2_texts[0])
+                return f"{h1_text}: {h2_text}"
+
+    # Fallback: return the longest candidate across h1 / h2 / <title>
+    candidates = h1_texts + h2_texts + title_texts
     if not candidates:
         return None
     return max(candidates, key=len)
@@ -407,13 +462,22 @@ class EpubMetadataExtractor:
                 if title is not None and ":" not in title and "—" not in title:
                     href = _find_title_page_href(opf_root, names)
                     if href is not None:
-                        # Resolve href relative to the OPF file's directory
+                        # Resolve href to a zip member path.
+                        # _find_title_page_href may return either:
+                        #   - a relative href from the OPF guide (e.g. 'title.xhtml')
+                        #   - a full zip-member path from the name scan (e.g. 'OEBPS/Title.xhtml')
                         opf_dir = opf_path.rsplit("/", 1)[0] if "/" in opf_path else ""
-                        candidate_path = f"{opf_dir}/{href}" if opf_dir else href
+                        if href in names:
+                            # Already an absolute zip path (came from name scan)
+                            candidate_path = href
+                        elif opf_dir:
+                            candidate_path = f"{opf_dir}/{href}"
+                        else:
+                            candidate_path = href
                         if candidate_path in names:
                             try:
                                 xhtml_bytes = zf.read(candidate_path)
-                                full_candidate = _parse_title_page_text(xhtml_bytes)
+                                full_candidate = _parse_title_page_text(xhtml_bytes, dc_title=title)
                             except KeyError:
                                 full_candidate = None
                             if full_candidate is not None and full_candidate != title:

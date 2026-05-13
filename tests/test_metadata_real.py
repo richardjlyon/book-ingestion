@@ -62,3 +62,49 @@ def test_holocaust_industry_pdf_acceptance() -> None:
     assert m.places == ["London", "New York"]
     assert m.date == "2003"
     assert m.first_published == "2000"
+
+
+_GAZA_EPUB_PATH = Path(
+    "/Users/rjl/Code/test-pdfs/"
+    "Gaza - An Inquest Into Its Martyrdom (2018) (Norman Finkelstein) "
+    "(z-library.sk, 1lib.sk, z-lib.sk).epub"
+)
+
+
+@pytest.mark.slow
+@pytest.mark.real_book
+def test_gaza_epub_acceptance() -> None:
+    if not _GAZA_EPUB_PATH.exists():
+        pytest.skip(f"fixture missing: {_GAZA_EPUB_PATH}")
+
+    m = extract_metadata(_GAZA_EPUB_PATH)
+
+    # Identifier — print ISBN
+    assert m.identifier.kind == IdentifierKind.ISBN
+    assert m.identifier.value == "9780520295711"
+    # eISBN as a candidate with EBOOK hint
+    eisbn = next(
+        (c for c in m.identifier.candidates if c.edition_hint == EditionHint.EBOOK), None,
+    )
+    assert eisbn is not None
+
+    # Title / subtitle — fallback supplied the subtitle from title-page xhtml
+    assert m.title == "Gaza"
+    assert m.subtitle == "An Inquest Into Its Martyrdom"
+    assert m.full_title == "Gaza: An Inquest Into Its Martyrdom"
+
+    # Creator — Finkelstein, Norman with trailing punctuation in raw
+    assert len(m.creators) == 1
+    assert m.creators[0].last_name == "Finkelstein"
+    assert m.creators[0].first_name == "Norman"
+    assert m.creators[0].raw is not None
+    assert m.creators[0].raw.endswith("; ") or m.creators[0].raw.endswith(";")
+
+    # Language normalised
+    assert m.language == "en"
+
+    # Warnings pinned
+    codes = {w.code for w in m.warnings}
+    assert WarningCode.LANGUAGE_NORMALISED in codes
+    assert WarningCode.DC_CREATOR_TRAILING_PUNCTUATION in codes
+    assert WarningCode.SUBTITLE_NOT_IN_OPF in codes
