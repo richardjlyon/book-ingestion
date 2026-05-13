@@ -200,3 +200,42 @@ def dedupe_isbn_candidates(
         )
 
     return [v[1] for v in by_key.values()]
+
+
+# --- Edition hint classification and priority picking -----------------------
+
+_PAPERBACK_KEYWORDS = ("paperback", "pbk", "softcover", "trade paperback")
+_HARDBACK_KEYWORDS = ("hardback", "hardcover", "cloth", " hb ")
+_EBOOK_KEYWORDS = ("pdf", "ebook", "kindle", "epub", "digital")
+
+
+def classify_edition_hint(text: str) -> EditionHint:
+    """Classify an edition from surrounding text (case-insensitive).
+
+    Used on a ~80-character window around each ISBN match. See spec §5.2.
+    """
+    lowered = text.lower()
+    if any(kw in lowered for kw in _PAPERBACK_KEYWORDS):
+        return EditionHint.PAPERBACK
+    if any(kw in lowered for kw in _HARDBACK_KEYWORDS) or " hb " in f" {lowered} ":
+        return EditionHint.HARDBACK
+    if any(kw in lowered for kw in _EBOOK_KEYWORDS):
+        return EditionHint.EBOOK
+    return EditionHint.UNSPECIFIED
+
+
+_EDITION_PRIORITY: tuple[EditionHint, ...] = (
+    EditionHint.PAPERBACK,
+    EditionHint.HARDBACK,
+    EditionHint.UNSPECIFIED,
+    EditionHint.EBOOK,
+)
+
+
+def pick_identifier_value(candidates: list[IdentifierCandidate]) -> str | None:
+    """Choose the best candidate's value according to PAPERBACK > HARDBACK > UNSPECIFIED > EBOOK."""
+    for tier in _EDITION_PRIORITY:
+        for cand in candidates:
+            if cand.edition_hint == tier:
+                return cand.value
+    return None
