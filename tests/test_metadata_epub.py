@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from book_ingestion.extractors.epub import EpubMetadataExtractor
+from book_ingestion.metadata import BookMetadata, ErrorCode
 from tests.fixtures.epub import (
     build_epub,
     build_epub_with_drm,
@@ -40,3 +42,24 @@ def test_epub_fixture_drm_builds(tmp_path: Path) -> None:
 def test_epub_fixture_malformed_builds(tmp_path: Path) -> None:
     p = build_malformed_epub(tmp_path / "bad.epub")
     assert p.exists()
+
+
+def test_epub_drm_returns_error(tmp_path: Path) -> None:
+    p = build_epub_with_drm(tmp_path / "drm.epub")
+    m = EpubMetadataExtractor().extract_metadata(p)
+    assert isinstance(m, BookMetadata)
+    assert m.error == ErrorCode.DRM_PROTECTED
+    assert m.title is None
+
+
+def test_epub_malformed_no_container_returns_error(tmp_path: Path) -> None:
+    p = build_malformed_epub(tmp_path / "bad.epub")
+    m = EpubMetadataExtractor().extract_metadata(p)
+    assert m.error == ErrorCode.MALFORMED_EPUB
+
+
+def test_epub_not_a_zip_returns_error(tmp_path: Path) -> None:
+    p = tmp_path / "notzip.epub"
+    p.write_bytes(b"this is not a zip file")
+    m = EpubMetadataExtractor().extract_metadata(p)
+    assert m.error == ErrorCode.MALFORMED_EPUB
