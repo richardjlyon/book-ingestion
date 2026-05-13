@@ -23,3 +23,6 @@ venv/
 
 # Acceptance run output (large JSON, transient caches)
 acceptance/
+
+# Per-developer cross-agent messaging — not project content
+.cowork/
