@@ -357,8 +357,8 @@ def test_pdf_prefers_all_caps_over_info_title_when_same_words(tmp_path: Path) ->
     assert WarningCode.TITLE_ALL_CAPS_IN_SOURCE in {w.code for w in m.warnings}
 
 
-def test_pdf_imprint_scope_excludes_pages_beyond_2(tmp_path: Path) -> None:
-    """Place names on page 4 are outside the 2-page imprint scope and are ignored."""
+def test_pdf_imprint_scope_excludes_pages_beyond_4(tmp_path: Path) -> None:
+    """Place names on page 6 are outside the 4-page imprint scope and are ignored."""
     from book_ingestion.extractors.pdf import PdfMetadataExtractor
 
     p = tmp_path / "scope.pdf"
@@ -370,15 +370,12 @@ def test_pdf_imprint_scope_excludes_pages_beyond_2(tmp_path: Path) -> None:
     c.setFont("Helvetica-Bold", 18)
     c.drawString(72, 700, "TITLE")
     c.showPage()
-    # Page 2: imprint (no place names)
-    c.setFont("Helvetica", 10)
-    c.drawString(72, 720, "Copyright © 2020")
-    c.showPage()
-    # Page 3: back matter (no place names)
-    c.setFont("Helvetica", 10)
-    c.drawString(72, 720, "Acknowledgements")
-    c.showPage()
-    # Page 4: body paragraph mentioning a city — must NOT be picked up
+    # Pages 2-5: imprint / front matter (no place names)
+    for label in ("Copyright © 2020", "Acknowledgements", "Contents", "Preface"):
+        c.setFont("Helvetica", 10)
+        c.drawString(72, 720, label)
+        c.showPage()
+    # Page 6 (index 5): body paragraph mentioning a city — must NOT be picked up
     c.setFont("Helvetica", 10)
     c.drawString(72, 720, "The conference was held in Chicago in 1995.")
     c.save()
@@ -478,3 +475,74 @@ def test_pdf_edition_hint_fallback_from_edition_phrase(tmp_path: Path) -> None:
         cand.edition_hint == EditionHint.PAPERBACK
         for cand in m.identifier.candidates
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 21 / 0021 regression tests — Beyond Chutzpah failure modes
+# ---------------------------------------------------------------------------
+
+
+def test_pdf_warns_incomplete_extraction_when_imprint_empty(tmp_path: Path) -> None:
+    """PDF with title only and no imprint page fires INCOMPLETE_EXTRACTION."""
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+    from book_ingestion.metadata import WarningCode
+
+    p = tmp_path / "no_imprint.pdf"
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.pdfgen import canvas as _canvas
+
+    c = _canvas.Canvas(str(p), pagesize=LETTER)
+    c.setTitle("Some Book Without Imprint")
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(72, 700, "SOME BOOK WITHOUT IMPRINT")
+    c.save()
+
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert WarningCode.INCOMPLETE_EXTRACTION in {w.code for w in m.warnings}
+    assert m.publisher is None
+    assert not m.places
+
+
+def test_pdf_creator_rejects_title_fragment_in_all_caps(tmp_path: Path) -> None:
+    """ALL-CAPS title banner on its own line must not be parsed as an author."""
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+
+    p = tmp_path / "title_banner.pdf"
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.pdfgen import canvas as _canvas
+
+    c = _canvas.Canvas(str(p), pagesize=LETTER)
+    # /Info /Title set so the extractor picks up the real title
+    c.setTitle("Beyond Chutzpah: On the Misuse of History")
+    # Page 1: only the ALL-CAPS title banner — no actual author block
+    c.setFont("Helvetica-Bold", 24)
+    c.drawString(72, 700, "BEYOND CHUTZPAH")
+    c.save()
+
+    m = PdfMetadataExtractor().extract_metadata(p)
+    # The title-fragment must NOT become a creator
+    assert m.creators == []
+
+
+def test_pdf_extracts_university_press_via_generic_pattern(tmp_path: Path) -> None:
+    """Imprint page with 'University of California Press' is captured by generic regex."""
+    from book_ingestion.extractors.pdf import PdfMetadataExtractor
+
+    p = tmp_path / "uc_press.pdf"
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.pdfgen import canvas as _canvas
+
+    c = _canvas.Canvas(str(p), pagesize=LETTER)
+    c.setTitle("Some UC Press Book")
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(72, 700, "SOME UC PRESS BOOK")
+    c.showPage()
+    # Page 2: imprint with UC Press line
+    c.setFont("Helvetica", 10)
+    c.drawString(72, 720, "University of California Press")
+    c.drawString(72, 706, "Berkeley and Los Angeles, California")
+    c.drawString(72, 692, "Copyright © 2005")
+    c.save()
+
+    m = PdfMetadataExtractor().extract_metadata(p)
+    assert m.publisher == "University of California Press"

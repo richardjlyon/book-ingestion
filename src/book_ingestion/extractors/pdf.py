@@ -48,6 +48,7 @@ _ROLE_PREFIXES: dict[str, CreatorRole] = {
 }
 
 _PUBLISHER_KEYWORDS = ("Press", "Books", "Publishing", "Verso", "Penguin", "Routledge")
+_UNIVERSITY_PRESS_RE = re.compile(r"\b\w+(?:\s+\w+)?\s+University\s+Press\b", re.IGNORECASE)
 _KNOWN_PLACES = (
     "London", "New York", "Cambridge", "Oxford", "Boston", "Chicago",
     "Edinburgh", "Glasgow", "Manchester", "Paris", "Berlin", "Rome",
@@ -291,7 +292,6 @@ def _extract_creators(
 ) -> list[Creator]:
     """Find a creator line on page 1 and parse it into Creator objects."""
     lines = [line.strip() for line in text_page_one.splitlines() if line.strip()]
-    exclude = {title or "", subtitle or ""}
 
     for raw in lines:
         lowered = raw.lower()
@@ -322,14 +322,26 @@ def _extract_creators(
             return [_parse_one_name(raw)]
 
     # Last resort: standalone name-like line (e.g. ALL-CAPS "NORMAN G. FINKELSTEIN").
+    title_lower = (title or "").lower()
     for raw in lines:
-        if raw in exclude:
+        if not _is_likely_author_line(raw):
+            continue
+        raw_lower = raw.lower()
+        if raw_lower == title_lower:
+            continue
+        # Reject candidates that are substrings of the title —
+        # ALL-CAPS title banners often re-state title fragments on their own line
+        # (e.g. "BEYOND CHUTZPAH" appears alone on the half-title page while the
+        # full title is "Beyond Chutzpah: On the Misuse of …").  We only check
+        # the title here, not the subtitle, because text-mined subtitles can
+        # accidentally absorb the author line when the block-break threshold is
+        # not reached, producing a false positive.
+        if title_lower and raw_lower in title_lower:
             continue
         # Skip lines that look like edition phrases (e.g. "Second Paperback Edition")
         if _EDITION_RE.fullmatch(raw.strip()):
             continue
-        if _is_likely_author_line(raw):
-            return [_parse_one_name(raw)]
+        return [_parse_one_name(raw)]
 
     return []
 
@@ -340,6 +352,7 @@ def _extract_publisher(imprint_text: str) -> str | None:
     First checks for 'Published by ' prefix; else looks for any imprint keyword.
     Prefers the shortest matching line (standalone publisher name beats a long
     description like 'First published by Verso 2000').
+    Falls back to a generic "X University Press" regex if no keyword matches.
     """
     best: str | None = None
     for line in imprint_text.splitlines():
@@ -359,7 +372,16 @@ def _extract_publisher(imprint_text: str) -> str | None:
             if best is None or len(cleaned) < len(best):
                 best = cleaned
             break
-    return best
+    if best is not None:
+        return best
+
+    # Fallback: generic "X University Press" pattern — catches UC Press, Yale,
+    # Princeton, Cambridge, Oxford, Harvard, Chicago, etc. without enumerating each.
+    m = _UNIVERSITY_PRESS_RE.search(imprint_text)
+    if m:
+        return m.group(0).strip()
+
+    return None
 
 
 def _extract_places(imprint_text: str) -> list[str]:
@@ -513,15 +535,23 @@ class PdfMetadataExtractor:
 
         creators = _extract_creators(title_page_text, title=title, subtitle=subtitle)
 
-        # Imprint block: at most the 2 pages immediately following the title
-        # page (indices title_page_idx+1 .. title_page_idx+2). Limiting to 2
-        # pages avoids picking up blurb/review pages that contain city names
-        # (e.g. "Chicago") or incidental years (e.g. "1998") that would corrupt
-        # the places and date fields.
-        imprint_pages = page_texts[title_page_idx + 1 : title_page_idx + 3]
-        imprint_text = "\n".join(imprint_pages)
+        # Imprint block uses two different search windows:
+        #
+        # • Publisher / dates / edition: up to 3 pages after the first non-empty
+        #   page.  Real books sometimes have a half-title leaf + blank verso before
+        #   the full title page, pushing the copyright page to index+2 or +3
+        #   relative to the first non-empty page (e.g. Beyond Chutzpah: blank p0,
+        #   half-title p1, blank p2, title p3, copyright p4 → title_page_idx=1,
+        #   so page_texts[2:5] = pages 2,3,4 which includes the copyright page).
+        #
+        # • Places: capped at 2 pages to avoid false positives from author-bio or
+        #   blurb pages that mention city names incidentally (e.g. "currently
+        #   teaches in Chicago" on page 5 of The Holocaust Industry).
+        imprint_wide = page_texts[title_page_idx + 1 : title_page_idx + 4]
+        imprint_narrow = page_texts[title_page_idx + 1 : title_page_idx + 3]
+        imprint_text = "\n".join(imprint_wide)
         publisher = _extract_publisher(imprint_text)
-        places = _extract_places(imprint_text)
+        places = _extract_places("\n".join(imprint_narrow))
         if len(places) > 1:
             warnings.append(MetadataWarning(code=WarningCode.MULTIPLE_PLACES_DETECTED))
         date, first_published = _extract_dates(imprint_text)
@@ -547,6 +577,22 @@ class PdfMetadataExtractor:
                         value=identifier.value,
                         candidates=new_candidates,
                     )
+
+        # Joint-emptiness signal: if the imprint mining produced nothing on any
+        # field, the extractor probably missed the imprint page entirely. Surface
+        # it as an INCOMPLETE_EXTRACTION warning so the consumer doesn't accept
+        # the partial result silently.
+        if (
+            publisher is None
+            and not places
+            and date is None
+            and first_published is None
+        ):
+            warnings.append(MetadataWarning(
+                code=WarningCode.INCOMPLETE_EXTRACTION,
+                detail="imprint block fields all empty (publisher, places, dates) — "
+                       "extractor likely missed the page",
+            ))
 
         return BookMetadata(
             identifier=identifier,
