@@ -7,8 +7,11 @@ shape and contract.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from book_ingestion.ir import SCHEMA_VERSION
 
 
 class IdentifierKind(StrEnum):
@@ -76,3 +79,33 @@ class MetadataWarning(BaseModel):
     model_config = ConfigDict(frozen=True)
     code: WarningCode
     detail: str | None = None
+
+
+class BookMetadata(BaseModel):
+    schema_version: str = SCHEMA_VERSION
+    kind: Literal["book_metadata"] = "book_metadata"
+
+    # Identifier
+    identifier: Identifier = Field(default_factory=Identifier)
+
+    # Title
+    title: str | None = None
+    subtitle: str | None = None
+    full_title: str | None = None
+
+    # Authorship
+    creators: list[Creator] = Field(default_factory=list)
+
+    # Publication
+    publisher: str | None = None
+    places: list[str] = Field(default_factory=list)
+    date: str | None = None
+    first_published: str | None = None
+    edition: str | None = None
+
+    # Other
+    language: str | None = None
+
+    # Diagnostics
+    error: ErrorCode | None = None
+    warnings: list[MetadataWarning] = Field(default_factory=list)

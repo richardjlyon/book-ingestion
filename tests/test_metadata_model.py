@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import pytest
 
+from book_ingestion.ir import SCHEMA_VERSION
 from book_ingestion.metadata import (
+    BookMetadata,
     Creator,
     CreatorRole,
     EditionHint,
@@ -117,3 +119,72 @@ def test_metadata_warning() -> None:
 def test_metadata_warning_no_detail() -> None:
     w = MetadataWarning(code=WarningCode.SUBTITLE_NOT_IN_OPF)
     assert w.detail is None
+
+
+def test_book_metadata_defaults() -> None:
+    m = BookMetadata()
+    assert m.schema_version == SCHEMA_VERSION
+    assert m.kind == "book_metadata"
+    assert m.title is None
+    assert m.creators == []
+    assert m.places == []
+    assert m.error is None
+    assert m.warnings == []
+    assert m.identifier.kind is None
+
+
+def test_book_metadata_full() -> None:
+    m = BookMetadata(
+        identifier=Identifier(
+            kind=IdentifierKind.ISBN,
+            value="9781844674879",
+            candidates=[
+                IdentifierCandidate(
+                    kind=IdentifierKind.ISBN,
+                    value="9781844674879",
+                    edition_hint=EditionHint.PAPERBACK,
+                ),
+            ],
+        ),
+        title="The Holocaust Industry",
+        subtitle="Reflections on the Exploitation of Jewish Suffering",
+        full_title="The Holocaust Industry: Reflections on the Exploitation of Jewish Suffering",
+        creators=[Creator(first_name="Norman G.", last_name="Finkelstein")],
+        publisher="Verso",
+        places=["London", "New York"],
+        date="2003",
+        first_published="2000",
+        edition="Second Paperback Edition",
+        language="en",
+        warnings=[MetadataWarning(code=WarningCode.TITLE_ALL_CAPS_IN_SOURCE)],
+    )
+    assert m.identifier.value == "9781844674879"
+    assert m.full_title.startswith("The Holocaust Industry:")
+    assert m.creators[0].last_name == "Finkelstein"
+
+
+def test_book_metadata_json_round_trip() -> None:
+    m = BookMetadata(
+        title="X",
+        identifier=Identifier(kind=IdentifierKind.ISBN, value="9780520295711"),
+    )
+    payload = m.model_dump(mode="json")
+    assert payload["schema_version"] == SCHEMA_VERSION
+    assert payload["kind"] == "book_metadata"
+    assert payload["title"] == "X"
+    assert payload["identifier"]["kind"] == "isbn"
+    assert payload["identifier"]["value"] == "9780520295711"
+    assert payload["warnings"] == []
+    assert payload["error"] is None
+
+    again = BookMetadata.model_validate(payload)
+    assert again == m
+
+
+def test_book_metadata_error_excludes_other_fields_at_default() -> None:
+    """When error is set, other fields stay at defaults (caller contract)."""
+    m = BookMetadata(error=ErrorCode.ENCRYPTED)
+    assert m.error == ErrorCode.ENCRYPTED
+    assert m.title is None
+    assert m.creators == []
+    assert m.warnings == []
