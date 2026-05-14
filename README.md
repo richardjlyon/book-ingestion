@@ -255,6 +255,23 @@ If Docling isn't installed, both functions raise a clear `ImportError` pointing 
 }
 ```
 
+#### Warning vocabulary
+
+`m.warnings` is a list of `MetadataWarning(code, detail)` entries drawn from a closed set. The **material** column reflects the convention the `adding-references` skill uses for its Step 6 confirmation trigger: anything material asks the user to pause and check; informational entries don't.
+
+| Code | Fires when | Material? |
+|---|---|---|
+| `incomplete_extraction` | Joint-emptiness on publisher AND places AND dates — extractor likely missed the imprint page. Or a recoverable library exception during parsing. | material |
+| `no_text_extracted` | PDF has no embedded text (scanned without OCR). All other fields will be at defaults. | material |
+| `multiple_isbns_detected` | More than one distinct ISBN edition remains after ISBN-10/13 dedupe (i.e., a real paperback-vs-hardback split). | material |
+| `multiple_places_detected` | More than one publication place detected on the imprint page. | material |
+| `subtitle_not_in_opf` | EPUB only: subtitle was synthesised from the title-page xhtml rather than `<dc:title>`. | material |
+| `title_all_caps_in_source` | Raw title text is ALL-CAPS in the source. No auto-casing applied. | informational |
+| `dc_creator_trailing_punctuation` | EPUB only: trailing `;` or `,` was stripped from the `<dc:creator>` text. | informational |
+| `language_normalised` | EPUB only: BCP-47 tag stripped to primary subtag (`"en-US"` → `"en"`). | informational |
+
+The hard-failure codes that go in `m.error` (not `m.warnings`) are `encrypted`, `drm_protected`, `malformed_pdf`, `malformed_epub`. When `error` is set, the other fields are at defaults.
+
 ### `BookSurvey` (returned by `survey`)
 
 ```jsonc
@@ -335,6 +352,19 @@ A worked example on the `What is Modern Israel` test fixture (232 pages, no `/Pa
 - Make LLM calls in default operation. The opt-in `--llm-assist` for chapter-structure inference is M4.
 - Strip running headers and page-number debris from `simple_view`. Those appear as their own paragraph blocks; consumers strip them. (A future M4 quality flag may help.)
 - Auto title-case ALL-CAPS strings (corrupts iPhone / DNA / USA — consumers decide, we just flag `TITLE_ALL_CAPS_IN_SOURCE`).
+
+## Known heuristic gaps
+
+These are real shapes the extractor handles imperfectly. Each has a known reason and a narrow fix-path. The discipline is **fixture-as-it-arises** — we don't pre-emptively patch (over-fitting guesses produces brittle code); we wait for a real-world fixture to surface the case, then harden narrowly + add a synthetic regression test that pins it.
+
+The safety net for all of these is the `incomplete_extraction` warning, which fires when the imprint-mining produces nothing on any field. Consumers should treat that warning as a "pause and confirm" signal — silent failures should not happen even when an individual heuristic misses.
+
+- **Publisher keyword list is narrow.** Presses not in the small built-in set (Verso, Penguin, Routledge, Press, Books, Publishing) silently produce `publisher=null`. The `\b\w+ University Press\b` regex catches most academic publishers; unconventional names (Suhrkamp, Gallimard, Haymarket, OR Books, …) need to be added as they arise.
+- **Place-name list is narrow.** Cities not in the small hardcoded list (London, New York, Cambridge, Oxford, Boston, Chicago, …) silently produce empty `places`. The list grows fixture-by-fixture.
+- **Edition phrase loses ordinal abbreviations.** `"Second updated edition"` matches cleanly, but `"updated 2nd ed."` falls outside the regex vocabulary (the keyword set is currently `First|Second|Third|Fourth|Fifth|Revised|Updated|Paperback|Hardback`).
+- **Mixed-case PDF title without `/Info /Title`.** Falls back to a heuristic that takes the first non-trivial line on page 1. Works for typical layouts but may misfire on pages with banners, dedications, or epigraphs above the title.
+- **ALL-CAPS title-block boundary uses a 15-char threshold.** Two consecutive ALL-CAPS lines ≥15 chars are treated as title + subtitle; shorter pairs are joined as one continued title. A short single-word ALL-CAPS subtitle could fold into the title block.
+- **Adversarial EPUB shapes** — unusual OPF locations, deeply nested OEBPS, multi-creator strings beyond `"Smith, J. and Jones, K."`. Handled case-by-case as they appear.
 
 ## Project layout
 
