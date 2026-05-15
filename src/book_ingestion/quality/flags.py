@@ -32,6 +32,13 @@ KNOWN_FLAGS: frozenset[str] = frozenset(
         "page_labels_embedded",
         "page_labels_inferred",
         "page_labels_unresolved",
+        # EPUB IR (M2.1)
+        "nav_used",
+        "spine_only",
+        "headings_split_used",
+        "chapter_spans_multiple_files",
+        "xhtml_parse_failure",
+        "drm_protected",
     }
 )
 
