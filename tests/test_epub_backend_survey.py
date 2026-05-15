@@ -107,3 +107,13 @@ def test_survey_xhtml_parse_failure_does_not_break_whole_doc(
     # The single broken file is still in the spine — Task 12/13's extract_chapter
     # will surface the per-file failure as failed_region. Survey just maps it.
     assert s.chapters or s.map.provenance == Provenance.NONE
+
+
+def test_public_api_survey_dispatches_to_epub_backend(tmp_path: Path, tmp_cache_dir: Path) -> None:
+    """End-to-end via book_ingestion.survey() — confirms api.py routing."""
+    from book_ingestion import survey as public_survey
+
+    p = build_epub_with_chapters(tmp_path / "api.epub")
+    s = public_survey(p, cache_dir=tmp_cache_dir)
+    assert s.source.format == "epub"
+    assert s.quality.backend == "epub_native"

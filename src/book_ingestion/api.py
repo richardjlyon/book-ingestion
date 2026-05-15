@@ -33,6 +33,11 @@ def _backend_for(path: Path) -> Backend:
             from book_ingestion.backends.pdf_docling import PdfDoclingBackend
             _BACKENDS["pdf"] = PdfDoclingBackend()
         return _BACKENDS["pdf"]
+    if fmt == "epub":
+        if "epub" not in _BACKENDS:
+            from book_ingestion.backends.epub_native import EpubNativeBackend
+            _BACKENDS["epub"] = EpubNativeBackend()
+        return _BACKENDS["epub"]
     raise ValueError(f"no backend registered for format: {fmt}")
 
 
