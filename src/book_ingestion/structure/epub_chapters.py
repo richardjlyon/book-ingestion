@@ -279,19 +279,70 @@ def _nav_driven_assembly(
     return chapters, map_info, flags
 
 
+def _headings_only_assembly(
+    opf_root: ET.Element,
+    zf: zipfile.ZipFile,
+    opf_dir: str,
+) -> tuple[list[Chapter], MapInfo, set[str]]:
+    """Step 5 — last-resort. Walk all manifest XHTML files in order,
+    treating each <h1> as a chapter boundary."""
+    chapters: list[Chapter] = []
+    synth_idx = 0  # synthetic 1-based spine index for SpineRange
+
+    manifest_files: list[str] = []
+    for item in opf_root.iter(f"{{{_OPF_NS}}}item"):
+        href = item.get("href") or ""
+        media = item.get("media-type") or ""
+        if media not in _CONTENT_MEDIA_TYPES or not href:
+            continue
+        full = f"{opf_dir}/{href}" if opf_dir and not href.startswith(opf_dir + "/") else href
+        manifest_files.append(full)
+
+    for f in manifest_files:
+        try:
+            content = zf.read(f)
+        except KeyError:
+            continue
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError:
+            continue
+        synth_idx += 1
+        for h in root.iter(f"{{{_XHTML_NS}}}h1"):
+            text = "".join(h.itertext()).strip()
+            if not text:
+                continue
+            chapters.append(Chapter(
+                index=len(chapters),
+                title=text,
+                locator=SpineRange(start_spine=synth_idx, end_spine=synth_idx),
+                provenance=Provenance.INFERRED,
+                confidence=Confidence.FAIR,
+            ))
+
+    if not chapters:
+        return [], MapInfo(provenance=Provenance.NONE, confidence=Confidence.POOR, method="none"), {"toc_unresolved"}
+
+    map_info = MapInfo(
+        provenance=Provenance.INFERRED,
+        confidence=Confidence.FAIR,
+        method="epub_headings",
+    )
+    return chapters, map_info, {"toc_unresolved"}
+
+
 def build_chapter_map_epub(
     *,
     spine: list[SpineItem],
     nav: list[NavEntry] | None,
     zf: zipfile.ZipFile,
     opf_dir: str,
+    opf_root: ET.Element | None = None,
 ) -> tuple[list[Chapter], MapInfo, set[str]]:
-    """Top-level entry — chooses the path per spec §5 Step 2.
-
-    Returns (chapters, map_info, flag_set). The flag_set is the additional
-    flags the recipe contributes; the backend assembles the final flag list.
-    """
+    """Top-level entry — chooses the path per spec §5 Step 2."""
     if not spine:
+        if opf_root is not None:
+            return _headings_only_assembly(opf_root, zf, opf_dir)
         return [], MapInfo(provenance=Provenance.NONE, confidence=Confidence.POOR, method="none"), {"toc_unresolved"}
 
     resolved_count = 0
