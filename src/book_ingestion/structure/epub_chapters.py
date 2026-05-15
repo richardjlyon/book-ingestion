@@ -299,6 +299,7 @@ def _headings_only_assembly(
         manifest_files.append(full)
 
     for f in manifest_files:
+        synth_idx += 1  # always bump — synth_idx tracks manifest position
         try:
             content = zf.read(f)
         except KeyError:
@@ -307,7 +308,6 @@ def _headings_only_assembly(
             root = ET.fromstring(content)
         except ET.ParseError:
             continue
-        synth_idx += 1
         for h in root.iter(f"{{{_XHTML_NS}}}h1"):
             text = "".join(h.itertext()).strip()
             if not text:
