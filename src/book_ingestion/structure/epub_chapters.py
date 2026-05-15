@@ -115,6 +115,170 @@ def _spine_only_assembly(
     return chapters, map_info, {"spine_only"}
 
 
+def parse_nav_or_ncx(zf: zipfile.ZipFile, *, opf_dir: str) -> list[NavEntry] | None:
+    """Find nav.xhtml or toc.ncx in the zip and return its top-level entries.
+
+    Returns None when neither is present or both fail to parse.
+    """
+    names = set(zf.namelist())
+
+    # Prefer nav.xhtml (EPUB 3) — search by name suffix.
+    for candidate in sorted(n for n in names if n.endswith("nav.xhtml")):
+        try:
+            content = zf.read(candidate)
+        except KeyError:
+            continue
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError:
+            continue
+        for nav in root.iter(f"{{{_XHTML_NS}}}nav"):
+            epub_type = (nav.get("{http://www.idpf.org/2007/ops}type") or "").strip()
+            if epub_type and epub_type != "toc":
+                continue
+            entries: list[NavEntry] = []
+            # Top-level <ol><li><a>; deeper nesting ignored
+            for ol in nav.iter(f"{{{_XHTML_NS}}}ol"):
+                for li in ol.findall(f"{{{_XHTML_NS}}}li"):
+                    a = li.find(f"{{{_XHTML_NS}}}a")
+                    if a is None:
+                        continue
+                    target = a.get("href") or ""
+                    title = "".join(a.itertext()).strip()
+                    if not target or not title:
+                        continue
+                    href, _, frag = target.partition("#")
+                    entries.append(NavEntry(
+                        title=title, target_href=href, target_frag=frag or None,
+                    ))
+                break  # first <ol> only — top-level
+            if entries:
+                return entries
+
+    # Fall back to toc.ncx (EPUB 2)
+    for candidate in sorted(n for n in names if n.endswith(".ncx")):
+        try:
+            content = zf.read(candidate)
+        except KeyError:
+            continue
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError:
+            continue
+        ncx_ns = "http://www.daisy.org/z3986/2005/ncx/"
+        navmap = root.find(f"{{{ncx_ns}}}navMap")
+        if navmap is None:
+            continue
+        ncx_entries: list[NavEntry] = []
+        for navpoint in navmap.findall(f"{{{ncx_ns}}}navPoint"):
+            label_elem = navpoint.find(f"{{{ncx_ns}}}navLabel/{{{ncx_ns}}}text")
+            content_elem = navpoint.find(f"{{{ncx_ns}}}content")
+            if label_elem is None or content_elem is None:
+                continue
+            title = (label_elem.text or "").strip()
+            target = content_elem.get("src") or ""
+            if not title or not target:
+                continue
+            href, _, frag = target.partition("#")
+            ncx_entries.append(NavEntry(
+                title=title, target_href=href, target_frag=frag or None,
+            ))
+        if ncx_entries:
+            return ncx_entries
+
+    return None
+
+
+def _resolve_nav_target_to_spine(
+    nav_target_href: str,
+    spine: list[SpineItem],
+    opf_dir: str,
+) -> int | None:
+    """Map a nav entry's href to its 1-based spine index, or None if unresolved."""
+    full = (
+        f"{opf_dir}/{nav_target_href}"
+        if opf_dir and not nav_target_href.startswith(opf_dir + "/")
+        else nav_target_href
+    )
+    for s in spine:
+        if s.href == full:
+            return s.idx
+    return None
+
+
+def _nav_driven_assembly(
+    spine: list[SpineItem],
+    nav: list[NavEntry],
+    opf_dir: str,
+) -> tuple[list[Chapter], MapInfo, set[str]]:
+    """Step 3 — nav-driven chapter assembly."""
+    flags: set[str] = {"nav_used"}
+    chapters: list[Chapter] = []
+
+    # Pre-resolve every nav entry's target spine index (drop unresolvable).
+    resolved: list[tuple[NavEntry, int]] = []
+    for e in nav:
+        idx = _resolve_nav_target_to_spine(e.target_href, spine, opf_dir)
+        if idx is not None:
+            resolved.append((e, idx))
+
+    if len(resolved) < 2:
+        # Defensive fallback — dispatcher should have caught this.
+        return [], MapInfo(provenance=Provenance.NONE, confidence=Confidence.POOR, method="none"), {"spine_only"}
+
+    last_spine_idx = spine[-1].idx
+
+    for i, (entry, this_idx) in enumerate(resolved):
+        # Determine the spine extent of this chapter
+        if i + 1 < len(resolved):
+            next_entry: NavEntry | None
+            next_entry, next_idx = resolved[i + 1]
+        else:
+            next_entry, next_idx = None, last_spine_idx + 1
+
+        if entry.target_frag is None:
+            # Whole-file chapter: spans up to (next_idx - 1)
+            end_spine = max(this_idx, next_idx - 1)
+            if end_spine > this_idx:
+                flags.add("chapter_spans_multiple_files")
+            locator = SpineRange(
+                start_spine=this_idx, end_spine=end_spine,
+                start_frag=None, end_frag=None,
+            )
+        else:
+            # Chapter starts mid-file via fragment
+            flags.add("headings_split_used")
+            if next_entry is not None and next_entry.target_frag is not None and next_idx == this_idx:
+                # Sibling chapter inside the same file
+                end_spine = this_idx
+                end_frag: str | None = next_entry.target_frag
+            else:
+                # Sibling is in a later file (or no sibling) — chapter consumes from frag to end
+                end_spine = max(this_idx, next_idx - 1)
+                end_frag = None
+                if end_spine > this_idx:
+                    flags.add("chapter_spans_multiple_files")
+            locator = SpineRange(
+                start_spine=this_idx, end_spine=end_spine,
+                start_frag=entry.target_frag, end_frag=end_frag,
+            )
+
+        chapters.append(Chapter(
+            index=i,
+            title=entry.title,
+            locator=locator,
+            provenance=Provenance.EMBEDDED,
+            confidence=Confidence.EXCELLENT,
+        ))
+
+    map_info = MapInfo(
+        provenance=Provenance.EMBEDDED,
+        confidence=Confidence.GOOD,
+        method="epub_nav",
+    )
+    return chapters, map_info, flags
+
+
 def build_chapter_map_epub(
     *,
     spine: list[SpineItem],
@@ -130,8 +294,13 @@ def build_chapter_map_epub(
     if not spine:
         return [], MapInfo(provenance=Provenance.NONE, confidence=Confidence.POOR, method="none"), {"toc_unresolved"}
 
-    if nav is None or len([e for e in nav if e.target_href]) < 2:
+    resolved_count = 0
+    if nav is not None:
+        for e in nav:
+            if _resolve_nav_target_to_spine(e.target_href, spine, opf_dir) is not None:
+                resolved_count += 1
+
+    if nav is None or resolved_count < 2:
         return _spine_only_assembly(spine, zf)
 
-    # Nav-driven path lands in Task 6
-    raise NotImplementedError("nav-driven path lands in Task 6")
+    return _nav_driven_assembly(spine, nav, opf_dir)
