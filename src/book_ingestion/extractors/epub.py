@@ -14,6 +14,18 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
+from book_ingestion.extractors._epub_common import (
+    detect_drm as _detect_drm,
+)
+from book_ingestion.extractors._epub_common import (
+    find_opf_path as _find_opf_path,
+)
+from book_ingestion.extractors._epub_common import (
+    open_epub_zip as _open_epub_zip,
+)
+from book_ingestion.extractors._epub_common import (
+    parse_opf_root as _parse_opf_root,
+)
 from book_ingestion.metadata import (
     BookMetadata,
     Creator,
@@ -32,11 +44,8 @@ from book_ingestion.metadata import (
 
 logger = logging.getLogger(__name__)
 
-_ADOBE_DRM_NS = "http://ns.adobe.com/adept"
-_APPLE_DRM_NS = "com.apple.iBooks"
 _DC_NS = "http://purl.org/dc/elements/1.1/"
 _OPF_NS = "http://www.idpf.org/2007/opf"
-_CONTAINER_NS = "urn:oasis:names:tc:opendocument:xmlns:container"
 
 _OPF_ROLE_MAP: dict[str, CreatorRole] = {
     "aut": CreatorRole.AUTHOR,
@@ -199,18 +208,6 @@ def _extract_creators_from_opf(
             creators.append(c.model_copy(update={"raw": raw_part}))
 
     return creators
-
-
-def _find_opf_path(container_xml: bytes) -> str | None:
-    """Parse container.xml to find the OPF path from rootfile/@full-path."""
-    try:
-        root = ET.fromstring(container_xml)
-    except ET.ParseError:
-        return None
-    rootfile = root.find(f".//{{{_CONTAINER_NS}}}rootfile")
-    if rootfile is None:
-        return None
-    return rootfile.get("full-path")
 
 
 def _normalise_language(raw: str) -> tuple[str, bool]:
@@ -380,7 +377,7 @@ class EpubMetadataExtractor:
         # `pages` is ignored for EPUB (no concept of leading pages).
         del pages
         try:
-            zf = zipfile.ZipFile(path)
+            zf = _open_epub_zip(path)
         except (zipfile.BadZipFile, OSError) as exc:
             logger.warning("EPUB %s is not a valid zip: %s", path, exc)
             return BookMetadata(
@@ -395,27 +392,17 @@ class EpubMetadataExtractor:
                 names = set(zf.namelist())
 
                 # DRM detection
-                if "META-INF/encryption.xml" in names:
-                    try:
-                        enc_bytes = zf.read("META-INF/encryption.xml")
-                        if _ADOBE_DRM_NS.encode() in enc_bytes or _APPLE_DRM_NS.encode() in enc_bytes:
-                            return BookMetadata(error=ErrorCode.DRM_PROTECTED)
-                    except KeyError:
-                        pass
-
-                # Missing container.xml is malformed
-                if "META-INF/container.xml" not in names:
-                    return BookMetadata(error=ErrorCode.MALFORMED_EPUB)
+                if _detect_drm(zf, names):
+                    return BookMetadata(error=ErrorCode.DRM_PROTECTED)
 
                 # Parse container.xml to find OPF path
-                container_xml = zf.read("META-INF/container.xml")
-                opf_path = _find_opf_path(container_xml)
+                opf_path = _find_opf_path(zf)
                 if opf_path is None or opf_path not in names:
                     return BookMetadata(error=ErrorCode.MALFORMED_EPUB)
 
                 # Parse OPF
                 try:
-                    opf_root = ET.fromstring(zf.read(opf_path))
+                    opf_root = _parse_opf_root(zf, opf_path)
                 except ET.ParseError as exc:
                     logger.warning("EPUB OPF parse failed for %s: %s", path, exc)
                     return BookMetadata(
@@ -424,6 +411,8 @@ class EpubMetadataExtractor:
                             code=WarningCode.INCOMPLETE_EXTRACTION, detail=str(exc),
                         )],
                     )
+                if opf_root is None:
+                    return BookMetadata(error=ErrorCode.MALFORMED_EPUB)
 
                 # Find metadata element
                 meta_elem = opf_root.find(f".//{{{_OPF_NS}}}metadata")

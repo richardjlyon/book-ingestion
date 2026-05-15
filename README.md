@@ -121,23 +121,38 @@ esac
 rm -f "$err"
 ```
 
-### `book-ingest survey` — chapter map (heavy, requires `[pdf-ir]`)
+### `book-ingest survey` — chapter map (heavy; PDFs require `[pdf-ir]`, EPUBs use stdlib)
 
 ```bash
 book-ingest survey path/to/book.pdf > survey.json
+book-ingest survey path/to/book.epub > survey.json
 ```
 
-Parses the PDF once via Docling, builds a chapter map from the embedded outline (or infers one from typographic hints), and returns a `BookSurvey` describing the structure.
+For PDFs: parses via Docling, builds a chapter map from the embedded outline (or infers one from typographic hints), and returns a `BookSurvey` describing the structure. For a 232-page non-fiction title on an M-series MacBook, expect roughly 3–4 minutes the first time (Docling parse + model warmup), sub-second on subsequent runs (content-hash cache).
 
-For a 232-page non-fiction title on an M-series MacBook, expect roughly 3–4 minutes the first time (Docling parse + model warmup), sub-second on subsequent runs (content-hash cache).
+For EPUBs: uses a stdlib parser (`zipfile` + `xml.etree.ElementTree`) — no Docling, no `[pdf-ir]` extra needed. Sub-second.
 
-### `book-ingest extract` — one chapter (heavy, requires `[pdf-ir]`)
+### `book-ingest extract` — one chapter (heavy; PDFs require `[pdf-ir]`, EPUBs use stdlib)
 
 ```bash
 book-ingest extract path/to/book.pdf --chapter 3 > chapter-03.json
+book-ingest extract path/to/book.epub --chapter 3 > chapter-03.json
 ```
 
 Returns a `ChapterContent` with a flat list of typed blocks (`paragraph`, `heading`, `table`, `figure_caption`, `footnote`, `page_break`, `failed_region`) in reading order, each with a `page` (PDF page) and a `page_label` (printed page) when known.
+
+### EPUB support (M2.1)
+
+`survey` and `extract` work for EPUB files using a stdlib parser (`zipfile` + `xml.etree.ElementTree`). **No `[pdf-ir]` extra required for EPUB** — Docling is only needed for PDFs. The same JSON IR shape comes back regardless of source format; the public API and CLI are symmetric.
+
+Format-specific details:
+
+- **Chapter locators are `SpineRange`** (with 1-based `start_spine` / `end_spine` and optional `start_frag` / `end_frag` for chapters bounded by HTML fragments) instead of `PageRange`.
+- **Page labels** (`page_label` field on each block) are populated when the EPUB carries print-page markers — EPUB 3 `<nav epub:type="page-list">` or in-content `<a class="page" id="page-N"/>` anchors. For EPUBs that discarded print pagination (Calibre conversions, born-digital EPUBs), `page_label` is `None` on every block. Branch on `BookSurvey.source.format == "epub"` to know whether to expect numeric page anchoring.
+- **EPUB-specific quality flags:** `nav_used`, `spine_only`, `headings_split_used`, `chapter_spans_multiple_files`, `xhtml_parse_failure`, `drm_protected` (paired with `unparseable`).
+- **Reused flags** (also emitted by PDF): `page_labels_embedded`, `page_labels_unresolved`, `unparseable`, `toc_unresolved`.
+- **DRM-protected EPUBs** return a degraded survey with `unparseable` + `drm_protected` flags. CLI exits 2.
+- **Empty-content spine items** (e.g. cover chapters that are image-only) extract to `simple_view = []`. This is correct behaviour, not a bug.
 
 ### `book-ingest cache` — content-hash-keyed cache
 

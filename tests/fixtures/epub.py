@@ -188,6 +188,217 @@ def build_malformed_epub(path: Path) -> Path:
     return path
 
 
+_NAV_XHTML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <head><title>Contents</title></head>
+  <body>
+    <nav epub:type="toc">
+      <ol>
+{toc_items}
+      </ol>
+    </nav>
+{page_list_block}
+  </body>
+</html>
+"""
+
+_NAV_PAGE_LIST_TEMPLATE = """    <nav epub:type="page-list">
+      <ol>
+{page_items}
+      </ol>
+    </nav>
+"""
+
+_NCX_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head><meta name="dtb:uid" content="bookid"/></head>
+  <docTitle><text>{book_title}</text></docTitle>
+  <navMap>
+{nav_points}
+  </navMap>
+</ncx>
+"""
+
+_CONTENT_XHTML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <head><title>{title}</title></head>
+  <body>
+{body}
+  </body>
+</html>
+"""
+
+
+def build_epub_with_chapters(
+    path: Path,
+    *,
+    dc_title: str = "Test Book",
+    chapters: list[dict] | None = None,
+    nav_entries: list[dict] | None = None,
+    page_list: list[tuple[str, str]] | None = None,
+    epub3: bool = True,
+) -> Path:
+    """Build a multi-spine EPUB with explicit chapters + nav.
+
+    `chapters`: list of {id, href, title, body_xhtml} dicts — one per spine item.
+    `nav_entries`: list of {title, target_href, target_frag} dicts — top-level TOC.
+                   When None, derived from `chapters` (one entry per chapter).
+    `page_list`: list of (printed_label, target_href_with_fragment) tuples for
+                 EPUB 3 pageList nav. When None, no pageList is emitted.
+    `epub3`: True → emit nav.xhtml; False → emit toc.ncx (EPUB 2 path).
+    """
+    chapters = chapters or [
+        {"id": "c1", "href": "ch1.xhtml", "title": "Chapter 1",
+         "body_xhtml": "<h1>Chapter 1</h1><p>First chapter body.</p>"},
+        {"id": "c2", "href": "ch2.xhtml", "title": "Chapter 2",
+         "body_xhtml": "<h1>Chapter 2</h1><p>Second chapter body.</p>"},
+    ]
+    nav_entries = nav_entries if nav_entries is not None else [
+        {"title": c["title"], "target_href": c["href"], "target_frag": None}
+        for c in chapters
+    ]
+
+    manifest_items: list[str] = []
+    spine_items: list[str] = []
+    files: dict[str, str] = {
+        "mimetype": "application/epub+zip",
+        "META-INF/container.xml": _CONTAINER_XML.format(opf_path="OEBPS/content.opf"),
+    }
+
+    for c in chapters:
+        manifest_items.append(
+            f'<item id="{c["id"]}" href="{c["href"]}" media-type="application/xhtml+xml"/>'
+        )
+        spine_items.append(f'<itemref idref="{c["id"]}"/>')
+        files[f"OEBPS/{c['href']}"] = _CONTENT_XHTML_TEMPLATE.format(
+            title=c["title"], body=c["body_xhtml"],
+        )
+
+    if epub3:
+        manifest_items.append(
+            '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
+        )
+        toc_items = "\n".join(
+            f'        <li><a href="{e["target_href"]}'
+            f'{("#" + e["target_frag"]) if e.get("target_frag") else ""}">{e["title"]}</a></li>'
+            for e in nav_entries
+        )
+        if page_list:
+            page_items = "\n".join(
+                f'        <li><a href="{href}">{label}</a></li>'
+                for label, href in page_list
+            )
+            page_list_block = _NAV_PAGE_LIST_TEMPLATE.format(page_items=page_items)
+        else:
+            page_list_block = ""
+        files["OEBPS/nav.xhtml"] = _NAV_XHTML_TEMPLATE.format(
+            toc_items=toc_items, page_list_block=page_list_block,
+        )
+    else:
+        manifest_items.append(
+            '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>'
+        )
+        nav_points = "\n".join(
+            f'    <navPoint id="np{i}" playOrder="{i+1}">'
+            f'<navLabel><text>{e["title"]}</text></navLabel>'
+            f'<content src="{e["target_href"]}'
+            f'{("#" + e["target_frag"]) if e.get("target_frag") else ""}"/>'
+            f'</navPoint>'
+            for i, e in enumerate(nav_entries)
+        )
+        files["OEBPS/toc.ncx"] = _NCX_TEMPLATE.format(
+            book_title=dc_title, nav_points=nav_points,
+        )
+
+    metadata_inner = (
+        f'<dc:title>{dc_title}</dc:title>\n    '
+        '<dc:language>en</dc:language>\n    '
+        '<dc:identifier id="bookid">test-book-id</dc:identifier>'
+    )
+    spine_attr = "" if epub3 else ' toc="ncx"'
+    opf = _OPF_TEMPLATE.replace(
+        '<spine toc="ncx">', f'<spine{spine_attr}>',
+    ).format(
+        metadata_inner=metadata_inner,
+        manifest_inner="\n    ".join(manifest_items),
+        spine_inner="\n    ".join(spine_items),
+        guide_block="",
+    )
+    files["OEBPS/content.opf"] = opf
+
+    _write_zip(path, files)
+    return path
+
+
+def build_epub_with_inline_page_anchors(
+    path: Path,
+    *,
+    dc_title: str = "Anchor Book",
+) -> Path:
+    """Build an EPUB whose content XHTML carries in-content `<a class="page" id="page-N"/>` anchors."""
+    body = (
+        '<a class="page" id="page-7"/>'
+        '<h1>Chapter 1</h1>'
+        '<p>Para before page 8.</p>'
+        '<a class="page" id="page-8"/>'
+        '<p>Para on page 8.</p>'
+        '<span epub:type="pagebreak" id="page-9" title="9"/>'
+        '<p>Para on page 9.</p>'
+    )
+    return build_epub_with_chapters(
+        path,
+        dc_title=dc_title,
+        chapters=[{"id": "c1", "href": "ch1.xhtml", "title": "Chapter 1", "body_xhtml": body}],
+    )
+
+
+def build_epub_with_malformed_xhtml(
+    path: Path,
+    *,
+    dc_title: str = "Broken Book",
+) -> Path:
+    """Build an EPUB whose only content file fails to parse as XML."""
+    files = {
+        "mimetype": "application/epub+zip",
+        "META-INF/container.xml": _CONTAINER_XML.format(opf_path="OEBPS/content.opf"),
+        "OEBPS/content.opf": _OPF_TEMPLATE.format(
+            metadata_inner=f'<dc:title>{dc_title}</dc:title><dc:language>en</dc:language>',
+            manifest_inner='<item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>',
+            spine_inner='<itemref idref="c1"/>',
+            guide_block="",
+        ),
+        # Deliberately malformed: unclosed tag, no XML declaration
+        "OEBPS/ch1.xhtml": "<html><body><p>Unclosed paragraph<h1>broken",
+    }
+    _write_zip(path, files)
+    return path
+
+
+def build_epub_with_chapter_spanning_file(
+    path: Path,
+    *,
+    dc_title: str = "Spanning Book",
+) -> Path:
+    """Build an EPUB where one spine file contains 2 chapters separated by <h1>s,
+    and the nav targets fragments inside that file (`ch.xhtml#chapA`, `ch.xhtml#chapB`).
+    """
+    body = (
+        '<h1 id="chapA">Chapter A</h1>'
+        '<p>Body of chapter A.</p>'
+        '<h1 id="chapB">Chapter B</h1>'
+        '<p>Body of chapter B.</p>'
+    )
+    return build_epub_with_chapters(
+        path,
+        dc_title=dc_title,
+        chapters=[{"id": "c", "href": "ch.xhtml", "title": "Both", "body_xhtml": body}],
+        nav_entries=[
+            {"title": "Chapter A", "target_href": "ch.xhtml", "target_frag": "chapA"},
+            {"title": "Chapter B", "target_href": "ch.xhtml", "target_frag": "chapB"},
+        ],
+    )
+
+
 def _write_zip(path: Path, files: dict[str, str]) -> None:
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         # mimetype must be uncompressed and first per the EPUB spec
