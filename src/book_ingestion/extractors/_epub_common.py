@@ -79,12 +79,16 @@ def read_pageList_anchors(
        manifest. Each `<a href="content.xhtml#frag">12</a>` contributes
        `"<href_or_frag>" -> "12"`.
 
-    2. In-content `<a class="page" id="page-N"/>`, `<a id="page-N"/>`, and
+    2. In-content `<a id="page-N"/>` (with or without `class="page"`) and
        `<span epub:type="pagebreak" id="..." title="N"/>` markers inside any
        content XHTML in the manifest. Each contributes `"<frag_id>" -> "N"`.
 
     The keys are the fragment identifiers / hrefs that block-level extraction
     will encounter while walking content XHTML.
+
+    When both sources produce the same key (e.g. nav points to `ch1.xhtml#p12`
+    and the same `id="p12"` exists in-content), the in-content marker wins
+    (source-2 overwrites source-1).
     """
     anchors: dict[str, str] = {}
 
@@ -94,7 +98,7 @@ def read_pageList_anchors(
         media = item.get("media-type") or ""
         if not href:
             continue
-        full_path = f"{opf_dir}/{href}" if opf_dir and not href.startswith(opf_dir) else href
+        full_path = f"{opf_dir}/{href}" if opf_dir and not href.startswith(opf_dir + "/") else href
         if full_path not in names:
             continue
         if media not in ("application/xhtml+xml", "text/html"):
