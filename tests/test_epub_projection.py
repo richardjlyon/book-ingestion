@@ -100,3 +100,48 @@ def test_heading_then_paragraph_in_order() -> None:
     assert len(blocks) == 2
     assert isinstance(blocks[0], Heading)
     assert isinstance(blocks[1], Paragraph)
+
+
+def test_xhtml_parse_failure_emits_failed_region() -> None:
+    blocks = project_xhtml_to_blocks(
+        xhtml_bytes=b"<html><body><p>Unclosed paragraph",
+        spine_idx=2, page_label_map={},
+    )
+    assert len(blocks) == 1
+    assert blocks[0].type == "failed_region"
+    assert blocks[0].reason == "xhtml_parse_failure"
+    assert blocks[0].page == 2
+    # Salvage should preserve some text content (best-effort).
+    assert blocks[0].raw_text is not None
+    assert "Unclosed paragraph" in blocks[0].raw_text
+
+
+def test_aside_footnote_does_not_double_emit_inner_paragraph() -> None:
+    """The <p> inside an aside-footnote must NOT be emitted as a separate Paragraph."""
+    body = '<aside epub:type="footnote" id="fn1"><p>Footnote text.</p></aside>'
+    blocks = project_xhtml_to_blocks(
+        xhtml_bytes=_wrap(body), spine_idx=1, page_label_map={},
+    )
+    assert len(blocks) == 1
+    assert blocks[0].type == "footnote"
+    assert blocks[0].id == "fn1"
+    assert "Footnote text." in blocks[0].text
+
+
+def test_table_with_nested_table_does_not_duplicate_rows() -> None:
+    """An inner <table> inside an outer <table>'s cell must not pollute the outer table's rows."""
+    body = (
+        '<table>'
+        '<tr><td>outer A</td></tr>'
+        '<tr><td><table><tr><td>inner</td></tr></table></td></tr>'
+        '</table>'
+    )
+    blocks = project_xhtml_to_blocks(
+        xhtml_bytes=_wrap(body), spine_idx=1, page_label_map={},
+    )
+    tables = [b for b in blocks if b.type == "table"]
+    # Only the outer table should be emitted (inner is absorbed via consumed_subtree).
+    assert len(tables) == 1
+    # Outer table should have exactly 2 rows.
+    assert tables[0].rows is not None
+    assert len(tables[0].rows) == 2

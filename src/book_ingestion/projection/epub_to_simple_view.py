@@ -5,6 +5,14 @@ See `docs/superpowers/specs/2026-05-14-m2.1-epub-ir-design.md` §6.
 Page-anchor tracking, boilerplate filtering, and fragment-bounded slicing
 land in Task 9. This module currently emits everything in document order
 without those refinements.
+
+Known deferrals (Task 9 + future):
+- Page-anchor tracking, boilerplate filtering, and fragment-bounded slicing
+  land in Task 9.
+- <pre> blocks are not yet handled — spec §3.3 calls for them to become
+  Paragraphs with verbatim content, but _text_of currently collapses whitespace.
+  Opt-out logic for pre subtrees is a future enhancement; trade non-fiction
+  (the M2.1 acceptance fixture genre) effectively never carries code blocks.
 """
 from __future__ import annotations
 
@@ -40,16 +48,31 @@ def _text_of(elem: ET.Element) -> str:
 
 
 def _table_rows(elem: ET.Element) -> list[list[str]]:
-    """Extract a 2D string grid from a <table>."""
+    """Extract a 2D string grid from a <table>.
+
+    Only direct rows (under <table>, <thead>, <tbody>, <tfoot>) are collected;
+    rows nested inside an inner <table> belong to that inner table, not this one.
+    """
     rows: list[list[str]] = []
-    for tr in elem.iter(f"{{{_XHTML_NS}}}tr"):
-        cells: list[str] = []
-        for td in tr:
-            tag_local = _local(td.tag)
-            if tag_local in ("td", "th"):
-                cells.append(_text_of(td))
-        if cells:
-            rows.append(cells)
+
+    def _collect_rows_from(container: ET.Element) -> None:
+        for child in container:
+            tag_local = _local(child.tag)
+            if tag_local == "tr":
+                cells: list[str] = []
+                for c in child:
+                    if _local(c.tag) in ("td", "th"):
+                        cells.append(_text_of(c))
+                if cells:
+                    rows.append(cells)
+
+    # Direct <tr> children of the <table>
+    _collect_rows_from(elem)
+    # And rows nested under thead / tbody / tfoot
+    for section in elem:
+        if _local(section.tag) in ("thead", "tbody", "tfoot"):
+            _collect_rows_from(section)
+
     return rows
 
 
@@ -85,13 +108,17 @@ def project_xhtml_to_blocks(
     body = found_body if found_body is not None else root
     blocks: list[Block] = []
     current_page_label: str | None = None
+    consumed_subtree: set[int] = set()  # id() of descendants whose container already emitted
     # start_frag / end_frag and page-anchor consumption land in Task 9.
     _ = start_frag
     _ = end_frag
     _ = page_label_map
 
     for elem in body.iter():
+        if id(elem) in consumed_subtree:
+            continue
         tag = elem.tag
+
         if tag in _HEADING_TAGS:
             text = _text_of(elem)
             if text:
@@ -125,6 +152,10 @@ def project_xhtml_to_blocks(
                 confidence=Confidence.EXCELLENT,
                 rows=rows or None, raw_text=raw_text,
             ))
+            # Suppress descendants — table cells are already absorbed via _text_of
+            for d in elem.iter():
+                if d is not elem:
+                    consumed_subtree.add(id(d))
         elif tag == f"{{{_XHTML_NS}}}aside":
             epub_type = (elem.get(f"{{{_EPUB_NS}}}type") or "").strip()
             if epub_type == "footnote":
@@ -134,6 +165,10 @@ def project_xhtml_to_blocks(
                     page=spine_idx, page_label=current_page_label,
                     confidence=Confidence.EXCELLENT,
                 ))
+                # Suppress descendants — Footnote text already absorbs the children.
+                for d in elem.iter():
+                    if d is not elem:
+                        consumed_subtree.add(id(d))
         elif tag == f"{{{_XHTML_NS}}}figcaption":
             text = _text_of(elem)
             if text:
