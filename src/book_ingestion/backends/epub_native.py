@@ -21,6 +21,7 @@ from book_ingestion.extractors._epub_common import (
 )
 from book_ingestion.ir import (
     SCHEMA_VERSION,
+    Block,
     BookSurvey,
     ChapterContent,
     Confidence,
@@ -149,6 +150,89 @@ class EpubNativeBackend:
         )
 
     def extract_chapter(self, path: Path, chapter_index: int, *, ctx: Context) -> ChapterContent:
-        # Lands in Tasks 12 + 13.
-        del path, chapter_index, ctx
-        raise NotImplementedError("extract_chapter lands in Tasks 12 + 13")
+        if ctx.use_cache:
+            cached = ctx.cache.read(path, f"chapter-{chapter_index}.json")
+            if cached is not None:
+                return ChapterContent.model_validate(cached)
+
+        survey = self.survey(path, ctx=ctx)
+        if chapter_index < 0 or chapter_index >= len(survey.chapters):
+            raise IndexError(
+                f"chapter_index {chapter_index} out of range "
+                f"(book has {len(survey.chapters)} chapters)"
+            )
+        chapter = survey.chapters[chapter_index]
+        # SpineRange is the only valid locator for EPUB chapters.
+        from book_ingestion.ir import SpineRange
+        assert isinstance(chapter.locator, SpineRange)
+
+        from book_ingestion.extractors._epub_common import read_pageList_anchors
+        from book_ingestion.projection.epub_to_simple_view import project_xhtml_to_blocks
+        from book_ingestion.structure.epub_chapters import extract_spine
+
+        with open_epub_zip(path) as zf:
+            opf_path = find_opf_path(zf)
+            assert opf_path is not None
+            opf_root = parse_opf_root(zf, opf_path)
+            assert opf_root is not None
+            opf_dir = opf_path.rsplit("/", 1)[0] if "/" in opf_path else ""
+            spine = extract_spine(opf_root, opf_dir=opf_dir)
+            page_label_map = read_pageList_anchors(
+                opf_root, zf, set(zf.namelist()), opf_dir=opf_dir,
+            )
+
+            flags: set[str] = set()
+            blocks: list[Block] = []
+
+            # Multi-file + fragment-bounded extraction lands in Task 13.
+            if (chapter.locator.start_spine != chapter.locator.end_spine
+                    or chapter.locator.start_frag is not None
+                    or chapter.locator.end_frag is not None):
+                raise NotImplementedError("multi-spine + fragment extraction lands in Task 13")
+
+            spine_idx = chapter.locator.start_spine
+            spine_item = next((s for s in spine if s.idx == spine_idx), None)
+            if spine_item is None:
+                raise IndexError(f"spine index {spine_idx} not found in resolved spine")
+            try:
+                xhtml_bytes = zf.read(spine_item.href)
+            except KeyError as exc:
+                raise IndexError(f"content file {spine_item.href} missing from zip") from exc
+
+            file_blocks = project_xhtml_to_blocks(
+                xhtml_bytes=xhtml_bytes,
+                spine_idx=spine_idx,
+                page_label_map=page_label_map,
+            )
+            blocks.extend(file_blocks)
+            if any(b.type == "failed_region" for b in file_blocks):
+                flags.add("xhtml_parse_failure")
+
+        for f in flags:
+            validate_flag(f)
+
+        counts: dict[str, int] = {}
+        for b in blocks:
+            if hasattr(b, "confidence"):
+                key = b.confidence.value
+                counts[key] = counts.get(key, 0) + 1
+
+        content = ChapterContent(
+            schema_version=SCHEMA_VERSION,
+            source=survey.source,
+            chapter=chapter,
+            simple_view=blocks,
+            quality=Quality(
+                backend=self.name,
+                pages_processed=[chapter.locator.start_spine],
+                pages_with_failures=sorted({
+                    b.page for b in blocks
+                    if b.type == "failed_region" and b.page is not None
+                }),
+                block_confidence_counts=counts,
+                flags=sorted(flags),
+            ),
+            cache_paths={},
+        )
+        ctx.cache.write(path, f"chapter-{chapter_index}.json", content.model_dump(mode="json"))
+        return content
