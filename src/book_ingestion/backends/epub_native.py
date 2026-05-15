@@ -167,6 +167,7 @@ class EpubNativeBackend:
         assert isinstance(chapter.locator, SpineRange)
 
         from book_ingestion.extractors._epub_common import read_pageList_anchors
+        from book_ingestion.ir import PageBreak
         from book_ingestion.projection.epub_to_simple_view import project_xhtml_to_blocks
         from book_ingestion.structure.epub_chapters import extract_spine
 
@@ -180,33 +181,43 @@ class EpubNativeBackend:
             page_label_map = read_pageList_anchors(
                 opf_root, zf, set(zf.namelist()), opf_dir=opf_dir,
             )
+            spine_by_idx = {s.idx: s for s in spine}
 
             flags: set[str] = set()
             blocks: list[Block] = []
 
-            # Multi-file + fragment-bounded extraction lands in Task 13.
-            if (chapter.locator.start_spine != chapter.locator.end_spine
-                    or chapter.locator.start_frag is not None
-                    or chapter.locator.end_frag is not None):
-                raise NotImplementedError("multi-spine + fragment extraction lands in Task 13")
+            start = chapter.locator.start_spine
+            end = chapter.locator.end_spine
+            for i in range(start, end + 1):
+                spine_item = spine_by_idx.get(i)
+                if spine_item is None:
+                    blocks.append(PageBreak(page=i, page_label=None))
+                    continue
+                try:
+                    xhtml_bytes = zf.read(spine_item.href)
+                except KeyError:
+                    blocks.append(PageBreak(page=i, page_label=None))
+                    continue
 
-            spine_idx = chapter.locator.start_spine
-            spine_item = next((s for s in spine if s.idx == spine_idx), None)
-            if spine_item is None:
-                raise IndexError(f"spine index {spine_idx} not found in resolved spine")
-            try:
-                xhtml_bytes = zf.read(spine_item.href)
-            except KeyError as exc:
-                raise IndexError(f"content file {spine_item.href} missing from zip") from exc
+                # Fragment bounding: only the start_spine respects start_frag,
+                # only the end_spine respects end_frag.
+                local_start_frag = chapter.locator.start_frag if i == start else None
+                local_end_frag = chapter.locator.end_frag if i == end else None
 
-            file_blocks = project_xhtml_to_blocks(
-                xhtml_bytes=xhtml_bytes,
-                spine_idx=spine_idx,
-                page_label_map=page_label_map,
-            )
-            blocks.extend(file_blocks)
-            if any(b.type == "failed_region" for b in file_blocks):
-                flags.add("xhtml_parse_failure")
+                file_blocks = project_xhtml_to_blocks(
+                    xhtml_bytes=xhtml_bytes,
+                    spine_idx=i,
+                    page_label_map=page_label_map,
+                    start_frag=local_start_frag,
+                    end_frag=local_end_frag,
+                )
+                if any(b.type == "failed_region" for b in file_blocks):
+                    flags.add("xhtml_parse_failure")
+
+                # Insert PageBreak between spine items
+                if i > start and blocks:
+                    blocks.append(PageBreak(page=i, page_label=None))
+                blocks.extend(file_blocks)
 
         for f in flags:
             validate_flag(f)
@@ -224,7 +235,7 @@ class EpubNativeBackend:
             simple_view=blocks,
             quality=Quality(
                 backend=self.name,
-                pages_processed=[chapter.locator.start_spine],
+                pages_processed=list(range(start, end + 1)),
                 pages_with_failures=sorted({
                     b.page for b in blocks
                     if b.type == "failed_region" and b.page is not None

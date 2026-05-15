@@ -78,3 +78,46 @@ def test_extract_cache_hit(backend: EpubNativeBackend, ctx: Context, tmp_path: P
     c1 = backend.extract_chapter(p, 0, ctx=ctx)
     c2 = backend.extract_chapter(p, 0, ctx=ctx)
     assert c1.model_dump(mode="json") == c2.model_dump(mode="json")
+
+
+def test_extract_multi_file_chapter_inserts_page_breaks(
+    backend: EpubNativeBackend, ctx: Context, tmp_path: Path
+) -> None:
+    """One chapter spanning 2 spine items should yield blocks from both,
+    separated by a PageBreak."""
+    p = build_epub_with_chapters(
+        tmp_path / "multi.epub",
+        chapters=[
+            {"id": "p1", "href": "p1.xhtml", "title": "Page 1",
+             "body_xhtml": "<p>First file body.</p>"},
+            {"id": "p2", "href": "p2.xhtml", "title": "Page 2",
+             "body_xhtml": "<p>Second file body.</p>"},
+            {"id": "p3", "href": "p3.xhtml", "title": "Part 2",
+             "body_xhtml": "<p>Part two starts here.</p>"},
+        ],
+        nav_entries=[
+            {"title": "Part 1", "target_href": "p1.xhtml", "target_frag": None},
+            {"title": "Part 2", "target_href": "p3.xhtml", "target_frag": None},
+        ],
+    )
+    c = backend.extract_chapter(p, 0, ctx=ctx)
+    paras = [b for b in c.simple_view if isinstance(b, Paragraph)]
+    assert {pp.text for pp in paras} == {"First file body.", "Second file body."}
+    page_breaks = [b for b in c.simple_view if b.type == "page_break"]
+    assert len(page_breaks) >= 1
+
+
+def test_extract_fragment_bounded_chapter(
+    backend: EpubNativeBackend, ctx: Context, tmp_path: Path
+) -> None:
+    """nav targets fragments inside a single spine file: chapter A bounded by chapB."""
+    from tests.fixtures.epub import build_epub_with_chapter_spanning_file
+    p = build_epub_with_chapter_spanning_file(tmp_path / "span.epub")
+    c_a = backend.extract_chapter(p, 0, ctx=ctx)
+    c_b = backend.extract_chapter(p, 1, ctx=ctx)
+    a_texts = {getattr(b, "text", "") for b in c_a.simple_view}
+    b_texts = {getattr(b, "text", "") for b in c_b.simple_view}
+    assert "Body of chapter A." in a_texts
+    assert "Body of chapter B." not in a_texts
+    assert "Body of chapter B." in b_texts
+    assert "Body of chapter A." not in b_texts
