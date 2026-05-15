@@ -44,10 +44,15 @@ def find_opf_path(zf: zipfile.ZipFile) -> str | None:
 
 
 def parse_opf_root(zf: zipfile.ZipFile, opf_path: str) -> ET.Element | None:
-    """Parse the OPF document and return its root <package> element, or None."""
+    """Parse the OPF document and return its root <package> element.
+
+    Returns None when the OPF path is not present in the zip.
+    Raises ET.ParseError when the OPF is present but malformed — the caller
+    decides how to surface the parser message in its own error/warning model.
+    """
     try:
         return ET.fromstring(zf.read(opf_path))
-    except (ET.ParseError, KeyError):
+    except KeyError:
         return None
 
 

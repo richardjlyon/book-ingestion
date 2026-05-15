@@ -210,7 +210,6 @@ def _extract_creators_from_opf(
     return creators
 
 
-
 def _normalise_language(raw: str) -> tuple[str, bool]:
     """Normalise a BCP-47 tag to its primary subtag. Returns (out, changed)."""
     primary = raw.split("-", 1)[0].lower()
@@ -402,15 +401,18 @@ class EpubMetadataExtractor:
                     return BookMetadata(error=ErrorCode.MALFORMED_EPUB)
 
                 # Parse OPF
-                opf_root = _parse_opf_root(zf, opf_path)
-                if opf_root is None:
+                try:
+                    opf_root = _parse_opf_root(zf, opf_path)
+                except ET.ParseError as exc:
+                    logger.warning("EPUB OPF parse failed for %s: %s", path, exc)
                     return BookMetadata(
                         error=ErrorCode.MALFORMED_EPUB,
                         warnings=[MetadataWarning(
-                            code=WarningCode.INCOMPLETE_EXTRACTION,
-                            detail=f"OPF parse failed for {path}",
+                            code=WarningCode.INCOMPLETE_EXTRACTION, detail=str(exc),
                         )],
                     )
+                if opf_root is None:
+                    return BookMetadata(error=ErrorCode.MALFORMED_EPUB)
 
                 # Find metadata element
                 meta_elem = opf_root.find(f".//{{{_OPF_NS}}}metadata")
