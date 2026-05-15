@@ -145,3 +145,81 @@ def test_table_with_nested_table_does_not_duplicate_rows() -> None:
     # Outer table should have exactly 2 rows.
     assert tables[0].rows is not None
     assert len(tables[0].rows) == 2
+
+
+def test_page_anchors_update_page_label_and_are_not_emitted() -> None:
+    body = (
+        '<a class="page" id="page-7"/>'
+        '<p>On page 7.</p>'
+        '<a class="page" id="page-8"/>'
+        '<p>On page 8.</p>'
+    )
+    blocks = project_xhtml_to_blocks(
+        xhtml_bytes=_wrap(body), spine_idx=1,
+        page_label_map={"page-7": "7", "page-8": "8"},
+    )
+    paras = [b for b in blocks if isinstance(b, Paragraph)]
+    assert len(paras) == 2
+    assert paras[0].text == "On page 7."
+    assert paras[0].page_label == "7"
+    assert paras[1].text == "On page 8."
+    assert paras[1].page_label == "8"
+
+
+def test_boilerplate_nav_block_is_skipped() -> None:
+    body = (
+        '<nav epub:type="toc"><ol><li><a href="x">x</a></li></ol></nav>'
+        '<p>Real content.</p>'
+    )
+    blocks = project_xhtml_to_blocks(
+        xhtml_bytes=_wrap(body), spine_idx=1, page_label_map={},
+    )
+    paras = [b for b in blocks if isinstance(b, Paragraph)]
+    assert len(paras) == 1
+    assert paras[0].text == "Real content."
+
+
+def test_cover_titlepage_div_is_skipped() -> None:
+    body = (
+        '<div epub:type="cover"><p>Cover image.</p></div>'
+        '<p>Real content.</p>'
+    )
+    blocks = project_xhtml_to_blocks(
+        xhtml_bytes=_wrap(body), spine_idx=1, page_label_map={},
+    )
+    paras = [b for b in blocks if isinstance(b, Paragraph)]
+    assert len(paras) == 1
+    assert paras[0].text == "Real content."
+
+
+def test_fragment_bounded_slice() -> None:
+    body = (
+        '<h1 id="chapA">A</h1><p>Body of A.</p>'
+        '<h1 id="chapB">B</h1><p>Body of B.</p>'
+    )
+    blocks_a = project_xhtml_to_blocks(
+        xhtml_bytes=_wrap(body), spine_idx=1, page_label_map={},
+        start_frag="chapA", end_frag="chapB",
+    )
+    texts = [getattr(b, "text", "") for b in blocks_a]
+    assert "A" in texts
+    assert "Body of A." in texts
+    assert "B" not in texts
+    assert "Body of B." not in texts
+
+
+def test_pagebreak_span_uses_title_attribute() -> None:
+    """`<span epub:type="pagebreak" id="x" title="42"/>` updates page_label to '42'."""
+    body = (
+        '<p>Before.</p>'
+        '<span epub:type="pagebreak" id="pb1" title="42"/>'
+        '<p>After.</p>'
+    )
+    blocks = project_xhtml_to_blocks(
+        xhtml_bytes=_wrap(body), spine_idx=1,
+        page_label_map={"pb1": "42"},
+    )
+    paras = [b for b in blocks if isinstance(b, Paragraph)]
+    assert len(paras) == 2
+    assert paras[0].page_label is None  # before the pagebreak
+    assert paras[1].page_label == "42"

@@ -2,22 +2,24 @@
 
 See `docs/superpowers/specs/2026-05-14-m2.1-epub-ir-design.md` §6.
 
-Page-anchor tracking, boilerplate filtering, and fragment-bounded slicing
-land in Task 9. This module currently emits everything in document order
-without those refinements.
+Stateful document-order walker:
+- page anchors (<a class="page">, <span epub:type="pagebreak">) consume into
+  current_page_label and are NOT emitted as blocks
+- nav, cover, titlepage, toc, page-list elements are skipped entirely
+- start_frag / end_frag bound emission for fragment-bounded chapter slices
+- xhtml parse failure emits a single failed_region with raw-text salvage
 
-Known deferrals (Task 9 + future):
-- Page-anchor tracking, boilerplate filtering, and fragment-bounded slicing
-  land in Task 9.
+Known deferrals (future):
 - <pre> blocks are not yet handled — spec §3.3 calls for them to become
-  Paragraphs with verbatim content, but _text_of currently collapses whitespace.
-  Opt-out logic for pre subtrees is a future enhancement; trade non-fiction
-  (the M2.1 acceptance fixture genre) effectively never carries code blocks.
+  Paragraphs with verbatim content, but _text_of currently collapses
+  whitespace. Trade non-fiction (the M2.1 acceptance fixture genre)
+  effectively never carries code blocks.
 """
 from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
+from typing import TypedDict
 
 from book_ingestion.ir import (
     Block,
@@ -34,31 +36,34 @@ _XHTML_NS = "http://www.w3.org/1999/xhtml"
 _EPUB_NS = "http://www.idpf.org/2007/ops"
 _HEADING_TAGS = {f"{{{_XHTML_NS}}}h{i}": i for i in range(1, 7)}
 
+_BOILERPLATE_EPUB_TYPES = frozenset({"cover", "titlepage", "toc", "nav", "page-list", "landmarks"})
+_BOILERPLATE_TAGS = frozenset({f"{{{_XHTML_NS}}}nav"})
+
+
+class _WalkerState(TypedDict):
+    current_page_label: str | None
+    in_range: bool
+    start_frag: str | None
+    end_frag: str | None
+    blocks: list[Block]
+
 
 def _local(tag: str) -> str:
-    """Strip namespace from a qualified tag name."""
     return tag.rsplit("}", 1)[-1] if "}" in tag else tag
 
 
 def _text_of(elem: ET.Element) -> str:
-    """Concatenated text content of `elem` and descendants, whitespace-normalised."""
     parts = list(elem.itertext())
     joined = "".join(parts)
     return re.sub(r"\s+", " ", joined).strip()
 
 
 def _table_rows(elem: ET.Element) -> list[list[str]]:
-    """Extract a 2D string grid from a <table>.
-
-    Only direct rows (under <table>, <thead>, <tbody>, <tfoot>) are collected;
-    rows nested inside an inner <table> belong to that inner table, not this one.
-    """
     rows: list[list[str]] = []
 
     def _collect_rows_from(container: ET.Element) -> None:
         for child in container:
-            tag_local = _local(child.tag)
-            if tag_local == "tr":
+            if _local(child.tag) == "tr":
                 cells: list[str] = []
                 for c in child:
                     if _local(c.tag) in ("td", "th"):
@@ -66,14 +71,169 @@ def _table_rows(elem: ET.Element) -> list[list[str]]:
                 if cells:
                     rows.append(cells)
 
-    # Direct <tr> children of the <table>
     _collect_rows_from(elem)
-    # And rows nested under thead / tbody / tfoot
     for section in elem:
         if _local(section.tag) in ("thead", "tbody", "tfoot"):
             _collect_rows_from(section)
-
     return rows
+
+
+def _is_boilerplate(elem: ET.Element) -> bool:
+    if elem.tag in _BOILERPLATE_TAGS:
+        return True
+    epub_type = (elem.get(f"{{{_EPUB_NS}}}type") or "").strip()
+    return epub_type in _BOILERPLATE_EPUB_TYPES
+
+
+def _read_page_label(elem: ET.Element, page_label_map: dict[str, str]) -> str | None:
+    """If `elem` is a page anchor, return its printed-page label; else None.
+
+    Recognised patterns:
+    - <a class="page" id="page-N"/>
+    - <a id="page-N"/> (with or without class)
+    - <span epub:type="pagebreak" id="..." title="N"/>
+    The page_label_map (from read_pageList_anchors) is consulted first; falls
+    back to id-stripping or the title/aria-label attribute.
+    """
+    tag_local = _local(elem.tag)
+    elem_id = elem.get("id") or ""
+    epub_type = (elem.get(f"{{{_EPUB_NS}}}type") or "").strip()
+
+    if tag_local == "a" and elem_id.startswith("page-"):
+        if elem_id in page_label_map:
+            return page_label_map[elem_id]
+        return elem_id[len("page-"):]
+    if epub_type == "pagebreak":
+        if elem_id and elem_id in page_label_map:
+            return page_label_map[elem_id]
+        return (
+            elem.get("title")
+            or elem.get("aria-label")
+            or (elem_id[len("page-"):] if elem_id.startswith("page-") else None)
+        )
+    return None
+
+
+def _emit_for_element(
+    elem: ET.Element,
+    *,
+    spine_idx: int,
+    current_page_label: str | None,
+    block_count: int,
+) -> list[Block] | None:
+    """Return Block(s) for a leaf-emitting element, OR None to signal "recurse".
+
+    Returns:
+      - [Block, ...] (possibly empty) when this element type is leaf-emitting.
+      - None when the element is a generic container — the walker should recurse.
+    """
+    tag = elem.tag
+    if tag in _HEADING_TAGS:
+        text = _text_of(elem)
+        return [Heading(
+            text=text, level=_HEADING_TAGS[tag],
+            page=spine_idx, page_label=current_page_label,
+            confidence=Confidence.EXCELLENT,
+        )] if text else []
+    if tag == f"{{{_XHTML_NS}}}p":
+        text = _text_of(elem)
+        return [Paragraph(
+            text=text, page=spine_idx, page_label=current_page_label,
+            confidence=Confidence.EXCELLENT,
+        )] if text else []
+    if tag == f"{{{_XHTML_NS}}}blockquote":
+        # If <p>s are nested, recurse so each <p> emits its own block.
+        if list(elem.iter(f"{{{_XHTML_NS}}}p")):
+            return None
+        text = _text_of(elem)
+        return [Paragraph(
+            text=text, page=spine_idx, page_label=current_page_label,
+            confidence=Confidence.EXCELLENT,
+        )] if text else []
+    if tag == f"{{{_XHTML_NS}}}table":
+        rows = _table_rows(elem)
+        raw_text = "\n".join(" | ".join(r) for r in rows)
+        return [Table(
+            page=spine_idx, page_label=current_page_label,
+            confidence=Confidence.EXCELLENT,
+            rows=rows or None, raw_text=raw_text,
+        )]
+    if tag == f"{{{_XHTML_NS}}}aside":
+        if (elem.get(f"{{{_EPUB_NS}}}type") or "").strip() == "footnote":
+            return [Footnote(
+                id=elem.get("id") or f"fn-{block_count}",
+                text=_text_of(elem),
+                page=spine_idx, page_label=current_page_label,
+                confidence=Confidence.EXCELLENT,
+            )]
+        return []  # non-footnote aside: skip (don't recurse — could be sidebar boilerplate)
+    if tag == f"{{{_XHTML_NS}}}figcaption":
+        text = _text_of(elem)
+        return [FigureCaption(
+            text=text, page=spine_idx, page_label=current_page_label,
+            confidence=Confidence.EXCELLENT,
+        )] if text else []
+    return None  # signal "recurse"
+
+
+def _walk_block_level(
+    parent: ET.Element,
+    *,
+    spine_idx: int,
+    page_label_map: dict[str, str],
+    state: _WalkerState,
+) -> None:
+    """Document-order recursive walk emitting block-level entries.
+
+    state = {
+        "current_page_label": str | None,
+        "in_range": bool,             # True when between start_frag and end_frag
+        "start_frag": str | None,     # None means "from top"
+        "end_frag": str | None,       # None means "to bottom"
+        "blocks": list[Block],
+    }
+    """
+    for elem in list(parent):
+        elem_id = elem.get("id") or ""
+
+        # End-frag check: stop emission when we hit the end fragment marker.
+        if state["end_frag"] is not None and elem_id == state["end_frag"]:
+            state["in_range"] = False
+
+        # Start-frag check: begin emission when we hit the start fragment marker.
+        if not state["in_range"] and state["start_frag"] is not None and elem_id == state["start_frag"]:
+            state["in_range"] = True
+
+        # If start_frag is set and we haven't found it yet, recurse to look deeper.
+        if not state["in_range"] and state["start_frag"] is not None:
+            _walk_block_level(elem, spine_idx=spine_idx, page_label_map=page_label_map, state=state)
+            continue
+
+        if not state["in_range"]:
+            continue
+
+        # Page anchor consumption (does not emit a block, does not recurse)
+        page_lbl = _read_page_label(elem, page_label_map)
+        if page_lbl is not None:
+            state["current_page_label"] = page_lbl
+            continue
+
+        # Boilerplate skip — entire subtree dropped
+        if _is_boilerplate(elem):
+            continue
+
+        # Element emission decision
+        emitted = _emit_for_element(
+            elem, spine_idx=spine_idx,
+            current_page_label=state["current_page_label"],
+            block_count=len(state["blocks"]),
+        )
+        if emitted is None:
+            # Generic container — recurse into children
+            _walk_block_level(elem, spine_idx=spine_idx, page_label_map=page_label_map, state=state)
+        else:
+            state["blocks"].extend(emitted)
+            # Leaf-emitting element: do NOT recurse into children
 
 
 def project_xhtml_to_blocks(
@@ -84,13 +244,7 @@ def project_xhtml_to_blocks(
     start_frag: str | None = None,
     end_frag: str | None = None,
 ) -> list[Block]:
-    """Walk an XHTML document and emit a list of simple_view blocks.
-
-    Parse failures emit a single `FailedRegion(reason="xhtml_parse_failure")`
-    with best-effort raw-text salvage.
-
-    `start_frag` / `end_frag` and page-anchor consumption land in Task 9.
-    """
+    """Walk an XHTML document and emit a list of simple_view blocks."""
     try:
         root = ET.fromstring(xhtml_bytes)
     except ET.ParseError:
@@ -104,77 +258,15 @@ def project_xhtml_to_blocks(
             reason="xhtml_parse_failure", raw_text=salvaged,
         )]
 
-    found_body = root.find(f"{{{_XHTML_NS}}}body")
-    body = found_body if found_body is not None else root
+    body_elem = root.find(f"{{{_XHTML_NS}}}body")
+    body = body_elem if body_elem is not None else root
     blocks: list[Block] = []
-    current_page_label: str | None = None
-    consumed_subtree: set[int] = set()  # id() of descendants whose container already emitted
-    # start_frag / end_frag and page-anchor consumption land in Task 9.
-    _ = start_frag
-    _ = end_frag
-    _ = page_label_map
-
-    for elem in body.iter():
-        if id(elem) in consumed_subtree:
-            continue
-        tag = elem.tag
-
-        if tag in _HEADING_TAGS:
-            text = _text_of(elem)
-            if text:
-                blocks.append(Heading(
-                    text=text, level=_HEADING_TAGS[tag],
-                    page=spine_idx, page_label=current_page_label,
-                    confidence=Confidence.EXCELLENT,
-                ))
-        elif tag == f"{{{_XHTML_NS}}}p":
-            text = _text_of(elem)
-            if text:
-                blocks.append(Paragraph(
-                    text=text, page=spine_idx, page_label=current_page_label,
-                    confidence=Confidence.EXCELLENT,
-                ))
-        elif tag == f"{{{_XHTML_NS}}}blockquote":
-            inner_ps = list(elem.iter(f"{{{_XHTML_NS}}}p"))
-            if not inner_ps:
-                text = _text_of(elem)
-                if text:
-                    blocks.append(Paragraph(
-                        text=text, page=spine_idx, page_label=current_page_label,
-                        confidence=Confidence.EXCELLENT,
-                    ))
-            # If <p>s are nested, the outer body.iter() will visit them.
-        elif tag == f"{{{_XHTML_NS}}}table":
-            rows = _table_rows(elem)
-            raw_text = "\n".join(" | ".join(r) for r in rows)
-            blocks.append(Table(
-                page=spine_idx, page_label=current_page_label,
-                confidence=Confidence.EXCELLENT,
-                rows=rows or None, raw_text=raw_text,
-            ))
-            # Suppress descendants — table cells are already absorbed via _text_of
-            for d in elem.iter():
-                if d is not elem:
-                    consumed_subtree.add(id(d))
-        elif tag == f"{{{_XHTML_NS}}}aside":
-            epub_type = (elem.get(f"{{{_EPUB_NS}}}type") or "").strip()
-            if epub_type == "footnote":
-                fn_id = elem.get("id") or f"fn-{len(blocks)}"
-                blocks.append(Footnote(
-                    id=fn_id, text=_text_of(elem),
-                    page=spine_idx, page_label=current_page_label,
-                    confidence=Confidence.EXCELLENT,
-                ))
-                # Suppress descendants — Footnote text already absorbs the children.
-                for d in elem.iter():
-                    if d is not elem:
-                        consumed_subtree.add(id(d))
-        elif tag == f"{{{_XHTML_NS}}}figcaption":
-            text = _text_of(elem)
-            if text:
-                blocks.append(FigureCaption(
-                    text=text, page=spine_idx, page_label=current_page_label,
-                    confidence=Confidence.EXCELLENT,
-                ))
-
+    state: _WalkerState = {
+        "current_page_label": None,
+        "in_range": start_frag is None,  # start emitting immediately when no start_frag
+        "start_frag": start_frag,
+        "end_frag": end_frag,
+        "blocks": blocks,
+    }
+    _walk_block_level(body, spine_idx=spine_idx, page_label_map=page_label_map, state=state)
     return blocks
