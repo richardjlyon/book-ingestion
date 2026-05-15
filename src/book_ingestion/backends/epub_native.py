@@ -50,6 +50,13 @@ class EpubNativeBackend:
         return survey
 
     def _build_survey(self, path: Path) -> BookSurvey:
+        from book_ingestion.extractors._epub_common import read_pageList_anchors
+        from book_ingestion.structure.epub_chapters import (
+            build_chapter_map_epub,
+            extract_spine,
+            parse_nav_or_ncx,
+        )
+
         source = self._source(path)
 
         try:
@@ -72,11 +79,48 @@ class EpubNativeBackend:
                 if opf_root is None:
                     return self._degraded(source, extra_flags=set())
 
-                # Nominal path lands in Task 11.
-                raise NotImplementedError("nominal survey path lands in Task 11")
-        except NotImplementedError:
-            raise
-        except Exception as exc:  # surface as degraded rather than crash CLI
+                opf_dir = opf_path.rsplit("/", 1)[0] if "/" in opf_path else ""
+
+                spine = extract_spine(opf_root, opf_dir=opf_dir)
+                nav = parse_nav_or_ncx(zf, opf_dir=opf_dir)
+                chapters, map_info, recipe_flags = build_chapter_map_epub(
+                    spine=spine, nav=nav, zf=zf, opf_dir=opf_dir, opf_root=opf_root,
+                )
+                page_label_map = read_pageList_anchors(opf_root, zf, names, opf_dir=opf_dir)
+
+                flags = set(recipe_flags)
+                if page_label_map:
+                    flags.add("page_labels_embedded")
+                    page_label_provenance = Provenance.EMBEDDED
+                else:
+                    flags.add("page_labels_unresolved")
+                    page_label_provenance = Provenance.NONE
+
+                sorted_flags = sorted(flags)
+                for f in sorted_flags:
+                    validate_flag(f)
+
+                # page_labels: dict[int, str] — only int-coercible values from the anchor map.
+                # The full anchor map is consumed at extract time via read_pageList_anchors,
+                # not threaded through the cache layer.
+                page_labels_field: dict[int, str] = {}
+                for v in page_label_map.values():
+                    try:
+                        page_labels_field[int(v)] = v
+                    except ValueError:
+                        continue
+
+                return BookSurvey(
+                    schema_version=SCHEMA_VERSION,
+                    source=source,
+                    metadata={},
+                    chapters=chapters,
+                    map=map_info,
+                    quality=Quality(backend=self.name, flags=sorted_flags),
+                    page_labels=page_labels_field,
+                    page_label_provenance=page_label_provenance,
+                )
+        except Exception as exc:  # defensive — surface as degraded rather than crash CLI
             logger.exception("EPUB %s survey failed: %s", path, exc)
             return self._degraded(source, extra_flags=set())
 
