@@ -332,3 +332,27 @@ def test_epub_title_page_synthesises_subtitle_from_h1_h2(tmp_path: Path) -> None
     assert m.full_title == "Gaza: An Inquest Into Its Martyrdom"
     codes = {w.code for w in m.warnings}
     assert WarningCode.SUBTITLE_NOT_IN_OPF in codes
+
+
+def test_m21_fixture_chapters_builds(tmp_path: Path) -> None:
+    from tests.fixtures.epub import build_epub_with_chapters
+    p = build_epub_with_chapters(tmp_path / "chap.epub")
+    assert p.exists() and p.stat().st_size > 500
+
+
+def test_m21_fixture_inline_anchors_builds(tmp_path: Path) -> None:
+    from tests.fixtures.epub import build_epub_with_inline_page_anchors
+    p = build_epub_with_inline_page_anchors(tmp_path / "anchors.epub")
+    assert p.exists() and p.stat().st_size > 500
+
+
+def test_m21_fixture_malformed_xhtml_builds(tmp_path: Path) -> None:
+    from tests.fixtures.epub import build_epub_with_malformed_xhtml
+    p = build_epub_with_malformed_xhtml(tmp_path / "broken.epub")
+    assert p.exists() and p.stat().st_size > 200
+
+
+def test_m21_fixture_spanning_file_builds(tmp_path: Path) -> None:
+    from tests.fixtures.epub import build_epub_with_chapter_spanning_file
+    p = build_epub_with_chapter_spanning_file(tmp_path / "span.epub")
+    assert p.exists() and p.stat().st_size > 500
