@@ -59,3 +59,30 @@ def test_pappe_all_chapters_extract_without_crash(tmp_cache_dir: Path) -> None:
     for i, _ in enumerate(s.chapters):
         c = extract_chapter(PAPPE_EPUB, i, cache_dir=tmp_cache_dir)
         assert c.simple_view is not None  # may be empty for cover/copyright spine items
+
+
+SHLAIM_EPUB = (
+    Path(__file__).parent.parent
+    / "test"
+    / "The Iron Wall Israel and the Arab World (Avi Shlaim) (z-library.sk, 1lib.sk, z-lib.sk).epub"
+)
+
+
+@pytest.mark.skipif(not _has(SHLAIM_EPUB), reason="Shlaim EPUB not present in test/")
+def test_shlaim_survey_returns_valid_book_survey(tmp_cache_dir: Path) -> None:
+    s = survey(SHLAIM_EPUB, cache_dir=tmp_cache_dir)
+    assert s.source.format == "epub"
+    assert s.chapters
+    # If Shlaim carries a pageList, page_label_provenance must reflect it.
+    if s.page_label_provenance == Provenance.EMBEDDED:
+        assert "page_labels_embedded" in s.quality.flags
+
+
+@pytest.mark.skipif(not _has(SHLAIM_EPUB), reason="Shlaim EPUB not present in test/")
+def test_shlaim_extract_first_chapter(tmp_cache_dir: Path) -> None:
+    # Chapter 0 is the Cover (image-only spine item — empty simple_view by design).
+    # Use chapter 1 (Title page) as the first content chapter.
+    c = extract_chapter(SHLAIM_EPUB, 1, cache_dir=tmp_cache_dir)
+    assert c.simple_view
+    failed = [b for b in c.simple_view if b.type == "failed_region"]
+    assert not failed, f"clean Norton EPUB should produce no failed_region: got {failed}"
