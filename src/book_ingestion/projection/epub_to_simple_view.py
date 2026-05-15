@@ -14,6 +14,14 @@ Known deferrals (future):
   Paragraphs with verbatim content, but _text_of currently collapses
   whitespace. Trade non-fiction (the M2.1 acceptance fixture genre)
   effectively never carries code blocks.
+- Inline page anchors inside leaf-emitting elements (e.g. `<p>Text <a class="page"
+  id="page-7"/> more.</p>`) are NOT consumed: the walker emits the Paragraph
+  and does not recurse into its children, so the page anchor is missed.
+  Fixing this requires walking into leaf elements just to find page anchors,
+  which conflicts with the leaf-emit-and-don't-recurse pattern. Acceptable for
+  M2.1 because Pappé and Shlaim place page anchors at block level (between
+  paragraphs), not inline within paragraphs. Real-world fixtures with inline
+  anchors should drive the next iteration.
 """
 from __future__ import annotations
 

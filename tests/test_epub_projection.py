@@ -140,7 +140,7 @@ def test_table_with_nested_table_does_not_duplicate_rows() -> None:
         xhtml_bytes=_wrap(body), spine_idx=1, page_label_map={},
     )
     tables = [b for b in blocks if b.type == "table"]
-    # Only the outer table should be emitted (inner is absorbed via consumed_subtree).
+    # Only the outer table should be emitted (inner is not visited because table is leaf-emitting).
     assert len(tables) == 1
     # Outer table should have exactly 2 rows.
     assert tables[0].rows is not None
