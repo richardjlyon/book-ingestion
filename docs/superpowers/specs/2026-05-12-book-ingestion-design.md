@@ -506,7 +506,7 @@ All version pins reflect releases verified on PyPI as of 2026-05-12.
 
 **License.** MIT, matching Docling, EbookLib, pdf-craft, and the broader open-source PDF ecosystem.
 
-**Repo location.** `/Users/rjl/Code/gitea/book-ingestion`, Gitea-hosted.
+**Repo location.** `/Users/rjl/Code/tool-book-ingestion`, Gitea-hosted.
 
 ## 10. Milestones
 
